@@ -1,0 +1,92 @@
+name: Release
+
+# 打 tag 时自动构建 mac (arm64 + x64) 和 windows (x64) 并发布 Release
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:  # 允许手动触发
+
+permissions:
+  contents: write  # 发布 Release 需要写权限
+
+jobs:
+  build:
+    name: Build ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-arm64
+            runner: macos-14
+            artifact: local-music-macos-arm64
+          - os: macos-x64
+            runner: macos-13
+            artifact: local-music-macos-x64
+          - os: windows-x64
+            runner: windows-latest
+            artifact: local-music-windows-x64.exe
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build with PyInstaller
+        run: pyinstaller build.spec --noconfirm
+
+      - name: Rename artifact (unix)
+        if: runner.os != 'Windows'
+        run: |
+          mv dist/local-music "dist/${{ matrix.artifact }}"
+          chmod +x "dist/${{ matrix.artifact }}"
+
+      - name: Rename artifact (windows)
+        if: runner.os == 'Windows'
+        run: |
+          mv dist/local-music.exe "dist/${{ matrix.artifact }}"
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+
+  release:
+    name: Publish Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: false
+
+      - name: Prepare release folder
+        run: |
+          mkdir -p release
+          find release-assets -type f -exec cp {} release/ \;
+          ls -la release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') }}

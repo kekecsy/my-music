@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>local music · 半本地音乐播放器</title>
+<link rel="stylesheet" href="/style.css?v=5">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E🎧%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+<div id="app">
+  <!-- 侧边栏 -->
+  <aside>
+    <div class="logo"><span class="logo-icon">🎧</span>local music</div>
+    <nav id="sidebar-nav">
+      <div class="nav-item" data-view="all">
+        <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
+        全部音乐
+      </div>
+      <div class="nav-item" data-view="queue">
+        <svg viewBox="0 0 24 24"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zm13-8v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V10h3V8h-5z"/></svg>
+        播放列表
+        <span class="pl-count">0</span>
+      </div>
+      <div class="nav-sep">歌单</div>
+      <div id="playlist-nav"></div>
+    </nav>
+    <button id="btn-new-playlist" class="ghost-btn">＋ 新建歌单</button>
+  </aside>
+
+  <!-- 主区域 -->
+  <main>
+    <header class="add-bar">
+      <input id="url-input" type="text" placeholder="粘贴 B 站视频链接（如 https://www.bilibili.com/video/BVxxxx 或 b23.tv 短链）">
+      <button id="btn-add">收 藏</button>
+    </header>
+
+    <div class="toolbar">
+      <h2 id="view-title">全部音乐</h2>
+      <span id="view-count" class="count"></span>
+      <div class="toolbar-right">
+        <input id="search-input" type="text" placeholder="搜索标题 / UP主">
+        <button id="btn-play-all" class="primary-btn">▶ 播放全部</button>
+      </div>
+    </div>
+
+    <div class="list-head">
+      <span class="head-check"></span>
+      <span style="width:44px"></span><span class="th-title">标题</span>
+      <span class="th-dur">时长</span><span class="th-status">状态</span><span class="th-act">操作</span>
+    </div>
+    <div id="track-list" class="track-list"></div>
+    <div id="empty-tip" class="empty-tip" hidden>
+      <div class="empty-icon">🎵</div>
+      <p>还没有收藏音乐</p>
+      <p class="sub">把 B 站视频链接粘贴到上方，点「收藏」试试</p>
+    </div>
+
+    <!-- 多选操作栏 -->
+    <div id="sel-bar" class="sel-bar" hidden>
+      <span id="sel-count">已选 0 首</span>
+      <div class="sel-acts">
+        <button class="sel-btn" data-selact="play">▶ 播放选中</button>
+        <button class="sel-btn" data-selact="download">⬇ 下载选中</button>
+        <button class="sel-btn" data-selact="addpl">＋ 加入歌单</button>
+        <button class="sel-btn ghost" data-selact="clear">取消选择</button>
+      </div>
+    </div>
+  </main>
+
+  <!-- 播放器（固定底部，网易云风格） -->
+  <footer id="player">
+    <div class="now-playing">
+      <div id="np-cover" class="np-cover">🎵</div>
+      <div class="np-meta">
+        <div id="np-title">未在播放</div>
+        <div id="np-artist"></div>
+      </div>
+    </div>
+    <div class="player-center">
+      <div class="controls">
+        <button id="btn-prev" title="上一首"><svg viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg></button>
+        <button id="btn-play" class="play-btn" title="播放/暂停">
+          <svg id="icon-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          <svg id="icon-pause" class="hide" viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>
+        </button>
+        <button id="btn-next" title="下一首"><svg viewBox="0 0 24 24"><path d="M16 6h2v12h-2zM6 18l8.5-6L6 6z"/></svg></button>
+        <button id="btn-mode" class="mode-btn" title="切换播放模式">
+          <svg id="mode-icon" viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></svg>
+        </button>
+        <span id="mode-label">列表循环</span>
+      </div>
+      <div class="progress-row">
+        <span id="time-cur">0:00</span>
+        <input id="progress" type="range" min="0" max="1000" value="0">
+        <span id="time-total">0:00</span>
+      </div>
+    </div>
+    <div class="player-right">
+      <svg class="vol-icon" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/></svg>
+      <input id="volume" type="range" min="0" max="100" value="80">
+    </div>
+  </footer>
+</div>
+
+<audio id="audio" preload="auto"></audio>
+
+<!-- 右键菜单 -->
+<div id="ctx-menu" class="ctx-menu" hidden></div>
+<!-- 加入歌单弹出层 -->
+<div id="playlist-popover" class="popover" hidden>
+  <div class="popover-title">加入歌单</div>
+  <div id="popover-list"></div>
+</div>
+<!-- 新建歌单弹窗 -->
+<div id="modal-overlay" class="modal-overlay" hidden>
+  <div class="modal">
+    <div class="modal-title">新建歌单</div>
+    <input id="modal-input" type="text" maxlength="30" placeholder="给歌单起个名字">
+    <div class="modal-btns">
+      <button id="modal-cancel" class="mbtn">取消</button>
+      <button id="modal-ok" class="mbtn primary">创 建</button>
+    </div>
+  </div>
+</div>
+<div id="toast-wrap"></div>
+
+<script src="/app.js?v=5"></script>
+</body>
+</html>

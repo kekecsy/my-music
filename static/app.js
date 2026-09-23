@@ -1,0 +1,859 @@
+/* local music · 前端播放器逻辑 */
+const $ = (s) => document.querySelector(s);
+const audio = $("#audio");
+
+const MODES = [
+  { key: "list-loop", label: "列表循环", icon: "M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z" },
+  { key: "single", label: "单曲循环", icon: "M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2.5V13h1.5l-2.7-2.7L8.6 13h1.5v1.5z" },
+  { key: "sequential", label: "顺序播放", icon: "M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z" },
+  { key: "shuffle", label: "随机播放", icon: "M10.59 9.17L5.41 4 4 5.41l5.17 5.17 1.42-1.41zM14.5 4l2.04 2.04L4 18.59 5.41 20 17.96 7.46 20 9.5V4h-5.5zm.33 9.41l-1.41 1.41 3.13 3.13L14.5 20H20v-5.5l-2.04 2.04-3.13-3.13z" },
+];
+
+const state = {
+  tracks: [],
+  playlists: [],
+  view: { type: "all" },          // "all" | "queue" | "pl"
+  viewTracks: [],
+  queue: [],                       // 当前播放列表（内存中的实际队列）
+  current: null,
+  mode: localStorage.getItem("lm-mode") || "list-loop",
+  search: "",
+  retryCount: 0,
+  selected: new Set(),
+  collapsed: new Set(JSON.parse(localStorage.getItem("lm-collapsed") || "[]")),
+};
+
+/* ---------------- 工具 ---------------- */
+function fmt(sec) {
+  sec = Math.max(0, Math.round(sec || 0));
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+function escapeHtml(s) {
+  return String(s || "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function toast(msg, type = "") {
+  const el = document.createElement("div");
+  el.className = `toast ${type}`;
+  el.textContent = msg;
+  $("#toast-wrap").appendChild(el);
+  setTimeout(() => el.remove(), 3200);
+}
+async function api(path, opts = {}) {
+  if (opts.body) {
+    opts.headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
+    opts.body = JSON.stringify(opts.body);
+  }
+  const r = await fetch(path, opts);
+  if (!r.ok) {
+    let msg = `请求失败 (${r.status})`;
+    try { msg = (await r.json()).detail || msg; } catch (e) {}
+    throw new Error(msg);
+  }
+  return r.json();
+}
+function modeIdx() { return MODES.findIndex((m) => m.key === state.mode); }
+function persistCollapsed() {
+  localStorage.setItem("lm-collapsed", JSON.stringify([...state.collapsed]));
+}
+
+/* ==================== 播放状态持久化 ==================== */
+function savePlaybackState() {
+  const s = {
+    trackId: state.current ? state.current.id : null,
+    position: audio.currentTime,
+    queue: [...state.queue],
+    mode: state.mode,
+    paused: audio.paused,
+    ts: Date.now(),
+  };
+  localStorage.setItem("lm-playback", JSON.stringify(s));
+}
+function loadPlaybackState() {
+  try {
+    const raw = localStorage.getItem("lm-playback");
+    if (!raw) return null;
+    const s = JSON.parse(raw);
+    // 超过 24 小时的状态不恢复
+    if (Date.now() - s.ts > 24 * 3600000) return null;
+    return s;
+  } catch (e) { return null; }
+}
+// 定期保存进度
+let saveTimer = setInterval(savePlaybackState, 5000);
+
+function commonPrefix(strs) {
+  if (!strs.length) return "";
+  let p = strs[0];
+  for (const s of strs) { while (!s.startsWith(p)) p = p.slice(0, -1); }
+  return p.trim();
+}
+
+/* ---------------- 数据 ---------------- */
+async function loadTracks() { state.tracks = await api("/api/tracks"); }
+async function loadPlaylists() { state.playlists = await api("/api/playlists"); }
+
+async function refresh() {
+  await Promise.all([loadTracks(), loadPlaylists()]);
+  renderSidebar();
+  renderList();
+  ensurePolling();
+}
+
+/* ---------------- 下载状态轮询 ---------------- */
+let pollTimer = null;
+function ensurePolling() {
+  const busy = state.tracks.some((t) => t.download_status === "downloading");
+  if (busy && !pollTimer) {
+    pollTimer = setInterval(async () => {
+      try {
+        await loadTracks();
+        await renderList();
+        if (!state.tracks.some((t) => t.download_status === "downloading")) stopPolling();
+      } catch (e) { stopPolling(); }
+    }, 2000);
+  } else if (!busy && pollTimer) {
+    stopPolling();
+  }
+}
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  loadTracks().then(() => renderList());
+}
+
+/* ---------------- 合集分组 ---------------- */
+function buildGroups(tracks) {
+  const byBvid = new Map();
+  const order = [];
+  for (const t of tracks) {
+    if (!byBvid.has(t.bvid)) { byBvid.set(t.bvid, []); order.push(t.bvid); }
+    byBvid.get(t.bvid).push(t);
+  }
+  return order.map((bvid) => {
+    const list = byBvid.get(bvid);
+    if (list.length <= 1) return { collection: false, tracks: list };
+    const sorted = [...list].sort((a, b) => (a.page || 1) - (b.page || 1));
+    let title = sorted[0].album || "";
+    if (!title) {
+      const p = commonPrefix(sorted.map((t) => t.title || ""));
+      title = p.length >= 6 ? p : sorted[0].title;
+    }
+    return { collection: true, bvid, title, tracks: sorted };
+  });
+}
+
+/* ---------------- 渲染侧边栏 ---------------- */
+function renderSidebar() {
+  const nav = $("#sidebar-nav");
+  // 保留前两个固定项（全部音乐、播放列表），只更新歌单区域
+  const fixed = nav.querySelectorAll("[data-view]");
+  let html = "";
+  fixed.forEach((el) => html += el.outerHTML);
+  html += `<div class="nav-sep">歌单</div>`;
+  html += state.playlists.map((p) => `
+    <div class="nav-item ${state.view.type === "pl" && state.view.id === p.id ? "active" : ""}"
+         data-pl="${p.id}" title="${escapeHtml(p.name)}">
+      <svg viewBox="0 0 24 24"><path d="M15 6H3v2h12V6zm0 4H3v2h-2zM3 16h8v-2H3v2zm14-8v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V10h3V8h-5z"/></svg>
+      <span class="pl-name">${escapeHtml(p.name)}</span>
+      <span class="pl-count">${p.count}</span>
+      <span class="act-btn del-pl" data-del-pl="${p.id}" title="删除歌单">✕</span>
+    </div>`).join("");
+  nav.innerHTML = html;
+
+  // 绑定事件
+  nav.querySelectorAll("[data-view]").forEach((el) => {
+    el.addEventListener("click", () => {
+      state.view = { type: el.dataset.view };
+      renderSidebar(); renderList();
+    });
+  });
+  nav.querySelectorAll("[data-pl]").forEach((el) => {
+    el.addEventListener("click", async (e) => {
+      if (e.target.closest("[data-del-pl]")) return;
+      state.view = { type: "pl", id: Number(el.dataset.pl) };
+      renderSidebar(); renderList();
+    });
+  });
+  nav.querySelectorAll("[data-del-pl]").forEach((el) => {
+    el.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const pl = state.playlists.find((p) => p.id === Number(el.dataset.delPl));
+      if (confirm(`删除歌单「${pl.name}」？（不会删除歌曲本身）`)) {
+        await api(`/api/playlists/${el.dataset.delPl}`, { method: "DELETE" });
+        if (state.view.type === "pl" && state.view.id === Number(el.dataset.delPl)) state.view = { type: "all" };
+        refresh();
+      }
+    });
+  });
+}
+
+async function currentViewTracks() {
+  if (state.view.type === "queue") return getQueueTracks();
+  if (state.view.type === "all") return state.tracks;
+  const pl = state.playlists.find((p) => p.id === state.view.id);
+  if (!pl) return [];
+  return api(`/api/playlists/${state.view.id}/tracks`);
+}
+
+/** 将 queue 里的 id 映射回完整 track 对象 */
+function getQueueTracks() {
+  return state.queue
+    .map((id) => state.tracks.find((t) => t.id === id))
+    .filter(Boolean);
+}
+
+let renderSeq = 0;
+async function renderList() {
+  const seq = ++renderSeq;
+  let tracks = await currentViewTracks();
+  if (seq !== renderSeq) return;
+  if (state.search) {
+    const kw = state.search.toLowerCase();
+    tracks = tracks.filter((t) =>
+      (t.title || "").toLowerCase().includes(kw) || (t.artist || "").toLowerCase().includes(kw));
+  }
+  state.viewTracks = tracks;
+
+  const pl = state.view.type === "pl" ? state.playlists.find((p) => p.id === state.view.id) : null;
+  if (state.view.type === "queue") {
+    $("#view-title").textContent = "播放列表";
+    $("#btn-play-all").textContent = "▶ 播放全部";
+  } else {
+    $("#view-title").textContent = state.view.type === "all" ? "全部音乐" : pl ? pl.name : "";
+    $("#btn-play-all").textContent = "▶ 播放全部";
+  }
+  $("#view-count").textContent = `共 ${tracks.length} 首`;
+
+  // 播放列表视图的空提示
+  const isQueueEmpty = state.view.type === "queue" && tracks.length === 0;
+  $("#empty-tip").hidden = !(isQueueEmpty || (state.view.type !== "queue" && tracks.length === 0));
+  if (isQueueEmpty) {
+    $("#empty-tip .empty-icon").textContent = "📋";
+    $("#empty-tip p:first-of-type").textContent = "播放列表是空的";
+    $("#empty-tip .sub").textContent = "从歌单或全部音乐中选择歌曲开始播放";
+  } else {
+    $("#empty-tip .empty-icon").textContent = "🎵";
+    $("#empty-tip p:first-of-type").textContent = "还没有收藏音乐";
+    $("#empty-tip .sub").textContent = "把 B 站视频链接粘贴到上方，点「收藏」试试";
+  }
+
+  let html = "";
+  if (state.view.type === "queue") {
+    // 播放列表视图：简单列表，无合集分组
+    html = tracks.map((t, i) => rowHtml(t, false, i)).join("");
+  } else if (state.view.type === "all") {
+    html = buildGroups(tracks).map((g) => {
+      if (!g.collection) return rowHtml(g.tracks[0]);
+      const open = !state.collapsed.has(g.bvid);
+      return collectionHtml(g) + (open
+        ? `<div class="coll-body">${g.tracks.map((t) => rowHtml(t, true)).join("")}</div>`
+        : "");
+    }).join("");
+  } else {
+    html = tracks.map((t) => rowHtml(t)).join("");
+  }
+
+  const list = $("#track-list");
+  list.innerHTML = html;
+  list.querySelectorAll(".track-row").forEach((row) => bindRow(row, Number(row.dataset.id)));
+  list.querySelectorAll(".coll-header").forEach((h) => bindCollHeader(h));
+  updateSelBar();
+}
+
+function statusBadge(t) {
+  if (t.download_status === "downloading") return `<span class="badge loading">下载中</span>`;
+  if (t.download_status === "error")
+    return `<span class="badge error" data-act="retry" title="${escapeHtml(t.error_msg || "下载失败")}，点击重试">失败·重试</span>`;
+  if (t.download_status === "done" && t.local_path) return `<span class="badge local">已下载</span>`;
+  return `<span class="badge online">在线</span>`;
+}
+
+/** @param {number?} queueIndex 播放列表视图中的序号 */
+function rowHtml(t, asChild = false, queueIndex = null) {
+  const isPlaying = state.current && state.current.id === t.id;
+  const inPlaylist = state.view.type === "pl";
+  const sel = state.selected.has(t.id);
+  const cover = t.cover ? `<img src="/api/cover/${t.id}" loading="lazy" onerror="this.remove()">` : "";
+  const idxBadge = queueIndex != null ? `<div class="queue-idx">${queueIndex + 1}</div>` : "";
+  return `
+  <div class="track-row ${isPlaying ? "playing" : ""} ${asChild ? "coll-child" : ""}" data-id="${t.id}">
+    <div class="row-check ${sel ? "on" : ""}" data-check="${t.id}"></div>
+    <div class="c-cover">${cover}${isPlaying ? '<div class="eq"><i></i><i></i><i></i></div>' : ""}${idxBadge}</div>
+    <div class="c-title-wrap">
+      <div class="c-title">${escapeHtml(t.title)}</div>
+      <div class="c-artist">${escapeHtml(t.artist)}</div>
+    </div>
+    <div class="c-dur">${fmt(t.duration)}</div>
+    <div class="c-status">${statusBadge(t)}</div>
+    <div class="c-act">
+      ${t.download_status === "done" && t.local_path
+        ? `<button class="act-btn dl-done" data-act="undownload" title="删除本地文件（保留收藏）"><svg viewBox="0 0 24 24"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg></button>`
+        : `<button class="act-btn" data-act="download" ${t.download_status === "downloading" ? "disabled" : ""} title="下载到本地"><svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>`}
+      <button class="act-btn" data-act="addpl" title="加入歌单"><svg viewBox="0 0 24 24"><path d="M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm13-1v-3h-2v3h-3v2h3v3h2v-3h3v-2h-3z"/></svg></button>
+      <button class="act-btn danger" data-act="delete" title="${inPlaylist ? "从此歌单移除" : "删除"}">
+        ${inPlaylist
+          ? `<svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>`
+          : `<svg viewBox="0 0 24 24"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`}
+      </button>
+    </div>
+  </div>`;
+}
+
+function collectionHtml(g) {
+  const open = !state.collapsed.has(g.bvid);
+  const allSel = g.tracks.every((t) => state.selected.has(t.id));
+  const someSel = g.tracks.some((t) => state.selected.has(t.id));
+  const cover = g.tracks[0].cover
+    ? `<img src="/api/cover/${g.tracks[0].id}" onerror="this.remove()">` : "🎼";
+  const doneCnt = g.tracks.filter((t) => t.download_status === "done").length;
+  return `
+  <div class="coll-header" data-bvid="${g.bvid}">
+    <div class="row-check ${allSel ? "on" : someSel ? "half" : ""}" data-checkgroup="${g.bvid}"></div>
+    <svg class="coll-arrow ${open ? "open" : ""}" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6z"/></svg>
+    <div class="coll-cover">${cover}</div>
+    <div class="coll-title-wrap">
+      <div class="coll-title">${escapeHtml(g.title)}</div>
+      <div class="coll-sub">合集 · ${g.tracks.length} 首${doneCnt ? ` · 已下载 <b>${doneCnt}</b>` : ""}</div>
+    </div>
+    <div class="coll-act">
+      <button class="act-btn" data-coll="play" title="播放整个合集"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
+      <button class="act-btn" data-coll="download" title="下载整个合集"><svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>
+      <button class="act-btn" data-coll="addpl" title="合集加入歌单"><svg viewBox="0 0 24 24"><path d="M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm13-1v-3h-2v3h-3v2h3v3h2v-3h3v-2h-3z"/></svg></button>
+    </div>
+  </div>`;
+}
+
+/* ---------------- 行 / 合集事件 ---------------- */
+function bindRow(row, id) {
+  row.addEventListener("click", async (e) => {
+    if (e.target.closest(".act-btn") || e.target.closest(".badge")) return;
+    const check = e.target.closest(".row-check");
+    if (check || document.body.classList.contains("selecting")) { toggleSel(id); return; }
+    playTrack(id, state.viewTracks.map((x) => x.id));
+  });
+  row.querySelectorAll("[data-act]").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      try { await rowAction(btn.dataset.act, id); } catch (err) { toast(err.message, "err"); }
+    });
+  });
+}
+
+function bindCollHeader(h) {
+  const bvid = h.dataset.bvid;
+  const group = buildGroups(state.viewTracks).find((g) => g.bvid === bvid);
+  if (!group) return;
+  const ids = group.tracks.map((t) => t.id);
+
+  h.addEventListener("click", async (e) => {
+    if (e.target.closest(".act-btn")) return;
+    if (e.target.closest("[data-checkgroup]")) { toggleSelGroup(ids); return; }
+    const b = state.collapsed.has(bvid) ? state.collapsed.delete(bvid) : state.collapsed.add(bvid);
+    persistCollapsed();
+    renderList();
+  });
+  h.querySelectorAll("[data-coll]").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const act = btn.dataset.coll;
+      try {
+        if (act === "play") playTrack(ids[0], ids);
+        else if (act === "download") { await downloadMany(ids); toast("合集开始下载…", "ok"); }
+        else if (act === "addpl") openPopoverAt(ids);
+      } catch (err) { toast(err.message, "err"); }
+    });
+  });
+}
+
+/* ---------------- 多选 ---------------- */
+function toggleSel(id) {
+  if (state.selected.has(id)) state.selected.delete(id);
+  else state.selected.add(id);
+  syncSelecting();
+  renderList();
+}
+function toggleSelGroup(ids) {
+  const all = ids.every((i) => state.selected.has(i));
+  ids.forEach((i) => all ? state.selected.delete(i) : state.selected.add(i));
+  syncSelecting();
+  renderList();
+}
+function syncSelecting() {
+  document.body.classList.toggle("selecting", state.selected.size > 0);
+}
+function clearSelection() {
+  state.selected.clear();
+  syncSelecting();
+  renderList();
+}
+function updateSelBar() {
+  const bar = $("#sel-bar");
+  bar.hidden = state.selected.size === 0;
+  $("#sel-count").textContent = `已选 ${state.selected.size} 首`;
+}
+async function downloadMany(ids) {
+  for (const id of ids) {
+    try { await api(`/api/tracks/${id}/download`, { method: "POST" }); } catch (e) {}
+  }
+  await loadTracks();
+  renderList();
+  ensurePolling();
+}
+
+$("#sel-bar").addEventListener("click", async (e) => {
+  const btn = e.target.closest("[data-selact]");
+  if (!btn) return;
+  const ids = [...state.selected];
+  const act = btn.dataset.selact;
+  try {
+    if (act === "play") { playTrack(ids[0], ids); clearSelection(); }
+    else if (act === "download") { await downloadMany(ids); toast("开始下载选中曲目…", "ok"); clearSelection(); }
+    else if (act === "addpl") openPopoverAt(ids);
+    else if (act === "clear") clearSelection();
+  } catch (err) { toast(err.message, "err"); }
+});
+
+/* ---------------- 动作 ---------------- */
+async function doDownload(id) {
+  await api(`/api/tracks/${id}/download`, { method: "POST" });
+  toast("开始下载…", "ok");
+  await loadTracks(); renderList(); ensurePolling();
+}
+
+async function rowAction(act, id) {
+  if (act === "download" || act === "retry") {
+    await doDownload(id);
+  } else if (act === "undownload") {
+    if (confirm("删除本地文件？收藏将保留，之后在线播放。")) {
+      await api(`/api/tracks/${id}/local`, { method: "DELETE" });
+      refresh();
+    }
+  } else if (act === "addpl") {
+    openPopoverAt([id]);
+  } else if (act === "delete") {
+    if (state.view.type === "queue") {
+      // 从播放列表中移除
+      removeFromQueue(id);
+    } else if (state.view.type === "pl") {
+      await api(`/api/playlists/${state.view.id}/tracks/${id}`, { method: "DELETE" });
+      refresh();
+    } else if (confirm("确认删除这首音乐？将同时删除本地文件。")) {
+      await api(`/api/tracks/${id}`, { method: "DELETE" });
+      if (state.current && state.current.id === id) { audio.pause(); audio.src = ""; state.current = null; updateNowPlaying(); }
+      refresh();
+    }
+  }
+}
+
+/** 从播放列表中移除某首 */
+function removeFromQueue(trackId) {
+  state.queue = state.queue.filter((id) => id !== trackId);
+  savePlaybackState();
+  if (state.current && state.current.id === trackId) {
+    // 正在播的被删了，切到下一首
+    playNext(false);
+  }
+  renderList();
+  updateQueueNavCount();
+}
+
+/** 更新侧边栏播放列表上的计数 */
+function updateQueueNavCount() {
+  const qItem = document.querySelector('[data-view="queue"] .pl-count');
+  if (qItem) qItem.textContent = state.queue.length;
+}
+
+/* ---------------- 右键菜单 ---------------- */
+const ctx = $("#ctx-menu");
+
+function showMenu(x, y, items, onPick) {
+  ctx.innerHTML = items.map((it, i) => it.sep
+    ? `<div class="ctx-sep"></div>`
+    : `<div class="ctx-item ${it.danger ? "danger" : ""}" data-i="${i}">
+         <svg viewBox="0 0 24 24"><path d="${it.icon}"/></svg>${it.label}
+       </div>`).join("");
+  ctx.hidden = false;
+  const r = ctx.getBoundingClientRect();
+  ctx.style.left = `${Math.min(x, window.innerWidth - r.width - 8)}px`;
+  ctx.style.top = `${Math.min(y, window.innerHeight - r.height - 8)}px`;
+  ctx.querySelectorAll("[data-i]").forEach((el) => {
+    el.addEventListener("click", () => {
+      closeCtxMenu();
+      onPick(items[Number(el.dataset.i)]);
+    });
+  });
+}
+
+async function deleteTracks(ids) {
+  for (const id of ids) {
+    try { await api(`/api/tracks/${id}`, { method: "DELETE" }); } catch (e) {}
+  }
+  if (state.current && ids.includes(state.current.id)) {
+    audio.pause(); audio.src = ""; state.current = null; updateNowPlaying();
+  }
+}
+
+function openCtxMenu(x, y, trackId) {
+  const t = state.tracks.find((v) => v.id === trackId);
+  if (!t) return;
+  const inPlaylist = state.view.type === "pl";
+  const inQueue = state.view.type === "queue";
+  const items = [
+    { act: "play", label: "立即播放", icon: "M8 5v14l11-7z" },
+    { act: "next", label: "下一首播放", icon: "M16 6h2v12h-2zM6 18l8.5-6L6 6z" },
+  ];
+  if (t.download_status === "done" && t.local_path) {
+    items.push({ act: "undownload", label: "删除本地文件", icon: "M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z" });
+  } else {
+    items.push({ act: t.download_status === "error" ? "retry" : "download",
+                 label: t.download_status === "error" ? "重试下载" : "下载到本地",
+                 icon: "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" });
+  }
+  items.push({ act: "addpl", label: "加入歌单…", icon: "M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm13-1v-3h-2v3h-3v2h3v3h2v-3h3v-2h-3z" });
+  if (inQueue) {
+    items.push({ sep: true });
+    items.push({ act: "remove-from-queue", label: "从播放列表移除", icon: "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z", danger: true });
+  }
+  items.push({ sep: true });
+  items.push({ act: "delete", label: inQueue ? "从播放列表移除" : inPlaylist ? "从此歌单移除" : "删除这首歌",
+               icon: "M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z", danger: true });
+
+  showMenu(x, y, items, async (it) => {
+    try {
+      if (it.act === "play") playTrack(trackId, state.viewTracks.map((v) => v.id));
+      else if (it.act === "next") {
+        const i = state.queue.indexOf(state.current ? state.current.id : -1);
+        state.queue = state.queue.filter((v) => v !== trackId);
+        state.queue.splice(i + 1, 0, trackId);
+        savePlaybackState();
+        toast("将在下一首播放", "ok");
+      }
+      else if (it.act === "remove-from-queue") {
+        removeFromQueue(trackId);
+        toast("已从播放列表移除", "ok");
+      }
+      else await rowAction(it.act, trackId);
+    } catch (err) { toast(err.message, "err"); }
+  });
+}
+
+function openCollCtxMenu(x, y, bvid) {
+  const g = buildGroups(state.viewTracks).find((v) => v.bvid === bvid);
+  if (!g) return;
+  const ids = g.tracks.map((t) => t.id);
+  const items = [
+    { act: "play", label: `播放整个合集（${ids.length} 首）`, icon: "M8 5v14l11-7z" },
+    { act: "download", label: "下载整个合集", icon: "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" },
+    { act: "addpl", label: "合集加入歌单…", icon: "M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm13-1v-3h-2v3h-3v2h3v3h2v-3h3v-2h-3z" },
+    { act: "select", label: "全选本合集", icon: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" },
+    { sep: true },
+    { act: "delete", label: "删除整个合集（含本地文件）", icon: "M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z", danger: true },
+  ];
+  showMenu(x, y, items, async (it) => {
+    try {
+      if (it.act === "play") playTrack(ids[0], ids);
+      else if (it.act === "download") { await downloadMany(ids); toast("合集开始下载…", "ok"); }
+      else if (it.act === "addpl") openPopoverAt(ids);
+      else if (it.act === "select") { ids.forEach(i => state.selected.add(i)); syncSelecting(); renderList(); }
+      else if (it.act === "delete") {
+        if (confirm(`删除整个合集「${g.title}」共 ${ids.length} 首？（含本地文件，不可恢复）`)) {
+          await deleteTracks(ids);
+          toast("合集已删除", "ok");
+          refresh();
+        }
+      }
+    } catch (err) { toast(err.message, "err"); }
+  });
+}
+
+function closeCtxMenu() { ctx.hidden = true; }
+document.addEventListener("click", (e) => { if (!e.target.closest(".ctx-menu")) closeCtxMenu(); });
+document.addEventListener("scroll", closeCtxMenu, true);
+window.addEventListener("blur", closeCtxMenu);
+document.addEventListener("contextmenu", (e) => {
+  const row = e.target.closest(".track-row");
+  if (row) { e.preventDefault(); openCtxMenu(e.clientX, e.clientY, Number(row.dataset.id)); return; }
+  const coll = e.target.closest(".coll-header");
+  if (coll) { e.preventDefault(); openCollCtxMenu(e.clientX, e.clientY, coll.dataset.bvid); return; }
+  closeCtxMenu();
+});
+
+/* ---------------- 加入歌单弹出层（支持批量） ---------------- */
+function openPopoverAt(trackIds, x, y) {
+  const ids = trackIds.filter((v, i, a) => a.indexOf(v) === i);
+  const pop = $("#playlist-popover");
+  pop.hidden = false;
+  pop.innerHTML = `<div class="popover-title">加入 ${ids.length > 1 ? ids.length + " 首歌曲到" : ""}歌单</div>` +
+    state.playlists.map((p) =>
+      `<div class="popover-item" data-addto="${p.id}">${escapeHtml(p.name)}<span>${p.count} 首</span></div>`).join("");
+  pop.style.visibility = "hidden";
+  requestAnimationFrame(() => {
+    const r = pop.getBoundingClientRect();
+    const px = x != null ? Math.min(x, window.innerWidth - r.width - 8)
+                         : (window.innerWidth - r.width) / 2;
+    const py = y != null ? Math.min(y + 6, window.innerHeight - r.height - 8)
+                         : window.innerHeight * 0.3;
+    pop.style.left = `${Math.max(8, px)}px`;
+    pop.style.top = `${Math.max(8, py)}px`;
+    pop.style.visibility = "";
+  });
+  pop.querySelectorAll("[data-addto]").forEach((el) => {
+    el.addEventListener("click", async () => {
+      try {
+        await api(`/api/playlists/${el.dataset.addto}/tracks/batch`, {
+          method: "POST", body: { track_ids: ids },
+        });
+        toast(`已加入 ${ids.length} 首`, "ok");
+        pop.hidden = true;
+        if (state.selected.size) clearSelection();
+        refresh();
+      } catch (err) { toast(err.message, "err"); }
+    });
+  });
+}
+document.addEventListener("click", (e) => {
+  const pop = $("#playlist-popover");
+  if (!pop.hidden && !e.target.closest(".popover") && !e.target.closest(".ctx-menu")
+      && !e.target.closest('[data-act="addpl"]')
+      && !e.target.closest('[data-coll="addpl"]') && !e.target.closest('[data-selact="addpl"]')) {
+    pop.hidden = true;
+  }
+});
+
+/* ---------------- 新建歌单弹窗 ---------------- */
+const modal = $("#modal-overlay"), modalInput = $("#modal-input");
+function openModal() {
+  modal.hidden = false;
+  modalInput.value = "";
+  setTimeout(() => modalInput.focus(), 30);
+}
+function closeModal() { modal.hidden = true; }
+$("#btn-new-playlist").addEventListener("click", openModal);
+$("#modal-cancel").addEventListener("click", closeModal);
+modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
+modalInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") $("#modal-ok").click();
+  if (e.key === "Escape") closeModal();
+});
+$("#modal-ok").addEventListener("click", async () => {
+  const name = modalInput.value.trim();
+  if (!name) { modalInput.focus(); return; }
+  try {
+    await api("/api/playlists", { method: "POST", body: { name } });
+    toast(`已创建「${name}」`, "ok");
+    closeModal();
+    refresh();
+  } catch (err) { toast(err.message, "err"); }
+});
+
+/* ==================== 播放核心 ==================== */
+function playTrack(id, queueIds) {
+  const t = state.tracks.find((x) => x.id === id);
+  if (!t) return;
+  if (queueIds) state.queue = queueIds;
+  if (!state.queue.includes(id)) state.queue.push(id);
+  state.current = t;
+  state.retryCount = 0;
+  audio.src = `/api/stream/${id}`;
+  audio.play().catch(() => {});
+  updateNowPlaying();
+  savePlaybackState();
+  renderList();
+  updateQueueNavCount();
+}
+
+function nextIndex(auto) {
+  const n = state.queue.length;
+  if (n === 0) return -1;
+  const i = state.queue.indexOf(state.current ? state.current.id : -1);
+  if (state.mode === "single" && auto) return i;
+  if (state.mode === "shuffle") {
+    if (n === 1) return 0;
+    let j = i;
+    while (j === i) j = Math.floor(Math.random() * n);
+    return j;
+  }
+  const next = i + 1;
+  if (next >= n) {
+    if (state.mode === "sequential" && auto) return -1;
+    return 0;
+  }
+  return next;
+}
+function playNext(auto = false) {
+  const idx = nextIndex(auto);
+  if (idx < 0) { audio.pause(); return; }
+  playTrack(state.queue[idx]);
+}
+function playPrev() {
+  const n = state.queue.length;
+  if (!n) return;
+  const i = state.queue.indexOf(state.current ? state.current.id : -1);
+  playTrack(state.queue[(i - 1 + n) % n]);
+}
+
+function updateNowPlaying() {
+  const t = state.current;
+  if (!t) {
+    $("#np-title").textContent = "未在播放";
+    $("#np-artist").textContent = "";
+    $("#np-cover").innerHTML = "🎵";
+    return;
+  }
+  $("#np-title").textContent = t.title;
+  $("#np-artist").textContent = t.artist;
+  $("#np-cover").innerHTML = t.cover ? `<img src="/api/cover/${t.id}">` : "🎵";
+  if ("mediaSession" in navigator) {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: t.title, artist: t.artist,
+      artwork: t.cover ? [{ src: `/api/cover/${t.id}`, sizes: "512x512" }] : [],
+    });
+  }
+}
+
+function updateModeUI() {
+  const m = MODES[modeIdx()];
+  $("#mode-label").textContent = m.label;
+  $("#mode-icon").querySelector("path").setAttribute("d", m.icon);
+}
+
+/* ---------------- 事件绑定 ---------------- */
+$("#btn-add").addEventListener("click", async () => {
+  const url = $("#url-input").value.trim();
+  if (!url) return;
+  const btn = $("#btn-add");
+  btn.disabled = true; btn.textContent = "解析中…";
+  try {
+    const res = await api("/api/tracks", { method: "POST", body: { url } });
+    if (res.added.length) {
+      toast(`已收藏 ${res.added.length} 首${res.skipped ? `（跳过已存在 ${res.skipped} 首）` : ""}`, "ok");
+    }
+    else toast(res.skipped ? "都已收藏过了" : "没有可收藏的内容", "err");
+    $("#url-input").value = "";
+    refresh();
+  } catch (err) { toast(err.message, "err"); }
+  btn.disabled = false; btn.textContent = "收 藏";
+});
+$("#url-input").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#btn-add").click(); });
+
+document.querySelector('[data-view="all"]').addEventListener("click", () => {
+  state.view = { type: "all" };
+  renderSidebar(); renderList();
+});
+document.querySelector('[data-view="queue"]').addEventListener("click", () => {
+  state.view = { type: "queue" };
+  renderSidebar(); renderList();
+});
+
+$("#search-input").addEventListener("input", (e) => {
+  state.search = e.target.value.trim();
+  renderList();
+});
+
+$("#btn-play-all").addEventListener("click", () => {
+  const ids = state.viewTracks.map((t) => t.id);
+  if (!ids.length) { toast("列表是空的", "err"); return; }
+  playTrack(ids[0], ids);
+});
+
+$("#btn-play").addEventListener("click", () => {
+  if (!state.current) {
+    const ids = state.viewTracks.map((t) => t.id);
+    if (ids.length) playTrack(ids[0], ids);
+    return;
+  }
+  if (audio.paused) audio.play(); else audio.pause();
+});
+$("#btn-next").addEventListener("click", () => playNext(false));
+$("#btn-prev").addEventListener("click", playPrev);
+
+$("#btn-mode").addEventListener("click", () => {
+  state.mode = MODES[(modeIdx() + 1) % MODES.length].key;
+  localStorage.setItem("lm-mode", state.mode);
+  updateModeUI();
+  savePlaybackState();
+  toast(`播放模式：${MODES[modeIdx()].label}`);
+});
+
+audio.addEventListener("play", () => {
+  $("#icon-play").classList.add("hide");
+  $("#icon-pause").classList.remove("hide");
+  savePlaybackState();
+});
+audio.addEventListener("pause", () => {
+  $("#icon-play").classList.remove("hide");
+  $("#icon-pause").classList.add("hide");
+  savePlaybackState();
+});
+audio.addEventListener("ended", () => playNext(true));
+audio.addEventListener("timeupdate", () => {
+  if (!audio.duration || !isFinite(audio.duration)) return;
+  $("#time-cur").textContent = fmt(audio.currentTime);
+  $("#time-total").textContent = fmt(audio.duration);
+  if (!seeking) $("#progress").value = Math.round(audio.currentTime / audio.duration * 1000);
+});
+audio.addEventListener("error", () => {
+  if (state.current && state.retryCount < 2) {
+    state.retryCount++;
+    audio.src = `/api/stream/${state.current.id}?r=${Date.now()}`;
+    audio.play().catch(() => {});
+  }
+});
+if ("mediaSession" in navigator) {
+  navigator.mediaSession.setActionHandler("play", () => audio.play());
+  navigator.mediaSession.setActionHandler("pause", () => audio.pause());
+  navigator.mediaSession.setActionHandler("nexttrack", () => playNext(false));
+  navigator.mediaSession.setActionHandler("previoustrack", playPrev);
+}
+
+let seeking = false;
+$("#progress").addEventListener("input", () => { seeking = true; });
+$("#progress").addEventListener("change", (e) => {
+  if (audio.duration && isFinite(audio.duration)) audio.currentTime = (e.target.value / 1000) * audio.duration;
+  seeking = false;
+  savePlaybackState();
+});
+
+const vol = $("#volume");
+audio.volume = Number(localStorage.getItem("lm-vol") ?? 0.8);
+vol.value = audio.volume * 100;
+vol.addEventListener("input", () => {
+  audio.volume = vol.value / 100;
+  localStorage.setItem("lm-vol", audio.volume);
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+  if (e.code === "Space") { e.preventDefault(); $("#btn-play").click(); }
+  if (e.key === "Escape" && state.selected.size) clearSelection();
+});
+
+/* ==================== 启动 & 状态恢复 ==================== */
+(async () => {
+  updateModeUI();
+  await refresh();
+
+  // 尝试恢复上次的播放状态
+  const saved = loadPlaybackState();
+  if (saved && saved.trackId && saved.queue && saved.queue.length) {
+    const t = state.tracks.find((tr) => tr.id === saved.trackId);
+    if (t) {
+      state.queue = saved.queue;
+      state.mode = saved.mode || "list-loop";
+      state.current = t;
+      audio.src = `/api/stream/${saved.trackId}`;
+      updateNowPlaying();
+      updateModeUI();
+
+      // 恢复播放位置
+      audio.addEventListener("canplay", function onCan() {
+        audio.removeEventListener("canplay", onCan);
+        audio.currentTime = Math.min(saved.position || 0, audio.duration || 0);
+        if (!saved.paused) audio.play().catch(() => {});
+        renderList();
+        updateQueueNavCount();
+      }, { once: true });
+    }
+  }
+  updateQueueNavCount();
+})();

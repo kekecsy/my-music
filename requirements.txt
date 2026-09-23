@@ -1,0 +1,8 @@
+# local music 核心依赖
+fastapi>=0.110
+uvicorn[standard]>=0.27
+httpx>=0.27
+yt-dlp>=2024.0
+
+# 打包工具（开发用，非运行时依赖）
+pyinstaller>=6.0
