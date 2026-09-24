@@ -511,6 +511,20 @@ def create_playlist(payload: NameIn):
     return {"id": pid, "name": name, "count": 0}
 
 
+@app.patch("/api/playlists/{pid}")
+def rename_playlist(pid, payload: NameIn):
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(400, "名称不能为空")
+    if not q("SELECT 1 FROM playlists WHERE id=?", (pid,), fetch=True):
+        raise HTTPException(404, "歌单不存在")
+    try:
+        q("UPDATE playlists SET name=? WHERE id=?", (name, pid))
+    except sqlite3.IntegrityError:
+        raise HTTPException(400, "已存在同名歌单")
+    return {"ok": True, "id": pid, "name": name}
+
+
 @app.delete("/api/playlists/{pid}")
 def delete_playlist(pid):
     if pid == 1:
@@ -568,14 +582,32 @@ def remove_from_playlist(pid, track_id):
 app.mount("/", StaticFiles(directory=str(STATIC), html=True), name="static")
 
 
+def _port_in_use(host, port):
+    """检测端口是否已被占用（即已有一个实例在运行）"""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(0.5)
+        return s.connect_ex((host, port)) == 0
+
+
 def main():
-    """入口：启动 uvicorn 服务并自动打开浏览器。
+    """入口：启动服务并自动打开浏览器。
     支持环境变量 LOCALMUSIC_PORT 覆盖端口（默认 8790）。
     """
     import uvicorn
     port = int(os.environ.get("LOCALMUSIC_PORT", "8790"))
     host = "127.0.0.1"
     url = f"http://{host}:{port}"
+
+    # 已有实例在运行 → 直接打开浏览器，不重复启动
+    if _port_in_use(host, port):
+        print(f"检测到 local music 已在运行，正在打开 {url}")
+        try:
+            webbrowser.open(url)
+        except Exception:
+            pass
+        return
+
     # 延迟打开浏览器，等服务起来
     def _open():
         time.sleep(1.5)
@@ -583,10 +615,14 @@ def main():
             webbrowser.open(url)
         except Exception:
             pass
+
     threading.Thread(target=_open, daemon=True).start()
     print(f"local music 启动中: {url}")
     print(f"数据目录: {DATA}")
-    uvicorn.run(app, host=host, port=port, log_level="warning")
+    try:
+        uvicorn.run(app, host=host, port=port, log_level="warning")
+    except KeyboardInterrupt:
+        print("\n已退出 local music")
 
 
 if __name__ == "__main__":

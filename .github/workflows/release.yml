@@ -44,23 +44,29 @@ jobs:
       - name: Build with PyInstaller
         run: pyinstaller build.spec --noconfirm
 
-      - name: Rename artifact (unix)
-        if: runner.os != 'Windows'
+      - name: Package artifact (macOS)
+        if: runner.os == 'macOS'
         run: |
-          mv dist/local-music "dist/${{ matrix.artifact }}"
-          chmod +x "dist/${{ matrix.artifact }}"
+          cd dist
+          mv local-music "${{ matrix.artifact }}"
+          chmod +x "${{ matrix.artifact }}"
+          # 用 tar.gz 打包，保留可执行权限（裸文件下载后会丢失 +x）
+          tar -czf "${{ matrix.artifact }}.tar.gz" "${{ matrix.artifact }}"
+          rm "${{ matrix.artifact }}"
+          ls -la
 
-      - name: Rename artifact (windows)
+      - name: Package artifact (Windows)
         if: runner.os == 'Windows'
+        shell: bash
         run: |
           mv dist/local-music.exe "dist/${{ matrix.artifact }}"
-        shell: bash
+          ls -la dist/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}*
 
   release:
     name: Publish Release

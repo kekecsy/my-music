@@ -156,7 +156,6 @@ function renderSidebar() {
       <svg viewBox="0 0 24 24"><path d="M15 6H3v2h12V6zm0 4H3v2h-2zM3 16h8v-2H3v2zm14-8v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V10h3V8h-5z"/></svg>
       <span class="pl-name">${escapeHtml(p.name)}</span>
       <span class="pl-count">${p.count}</span>
-      <span class="act-btn del-pl" data-del-pl="${p.id}" title="删除歌单">✕</span>
     </div>`).join("");
   nav.innerHTML = html;
 
@@ -168,21 +167,15 @@ function renderSidebar() {
     });
   });
   nav.querySelectorAll("[data-pl]").forEach((el) => {
-    el.addEventListener("click", async (e) => {
-      if (e.target.closest("[data-del-pl]")) return;
+    el.addEventListener("click", async () => {
       state.view = { type: "pl", id: Number(el.dataset.pl) };
       renderSidebar(); renderList();
     });
-  });
-  nav.querySelectorAll("[data-del-pl]").forEach((el) => {
-    el.addEventListener("click", async (e) => {
+    // 右键菜单：播放 / 加入播放列表 / 重命名 / 删除
+    el.addEventListener("contextmenu", (e) => {
+      e.preventDefault();
       e.stopPropagation();
-      const pl = state.playlists.find((p) => p.id === Number(el.dataset.delPl));
-      if (confirm(`删除歌单「${pl.name}」？（不会删除歌曲本身）`)) {
-        await api(`/api/playlists/${el.dataset.delPl}`, { method: "DELETE" });
-        if (state.view.type === "pl" && state.view.id === Number(el.dataset.delPl)) state.view = { type: "all" };
-        refresh();
-      }
+      openPlCtxMenu(e.clientX, e.clientY, Number(el.dataset.pl));
     });
   });
 }
@@ -287,7 +280,7 @@ function rowHtml(t, asChild = false, queueIndex = null) {
     <div class="c-status">${statusBadge(t)}</div>
     <div class="c-act">
       ${t.download_status === "done" && t.local_path
-        ? `<button class="act-btn dl-done" data-act="undownload" title="删除本地文件（保留收藏）"><svg viewBox="0 0 24 24"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg></button>`
+        ? ""
         : `<button class="act-btn" data-act="download" ${t.download_status === "downloading" ? "disabled" : ""} title="下载到本地"><svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>`}
       <button class="act-btn" data-act="addpl" title="加入歌单"><svg viewBox="0 0 24 24"><path d="M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm13-1v-3h-2v3h-3v2h3v3h2v-3h3v-2h-3z"/></svg></button>
       <button class="act-btn danger" data-act="delete" title="${inPlaylist ? "从此歌单移除" : "删除"}">
@@ -424,7 +417,12 @@ async function rowAction(act, id) {
   if (act === "download" || act === "retry") {
     await doDownload(id);
   } else if (act === "undownload") {
-    if (confirm("删除本地文件？收藏将保留，之后在线播放。")) {
+    const ok = await askConfirm({
+      title: "删除本地文件",
+      text: "将从磁盘删除这首歌的离线文件。\n收藏会保留，之后仍可在线播放或重新下载。",
+      okText: "删 除",
+    });
+    if (ok) {
       await api(`/api/tracks/${id}/local`, { method: "DELETE" });
       refresh();
     }
@@ -437,7 +435,13 @@ async function rowAction(act, id) {
     } else if (state.view.type === "pl") {
       await api(`/api/playlists/${state.view.id}/tracks/${id}`, { method: "DELETE" });
       refresh();
-    } else if (confirm("确认删除这首音乐？将同时删除本地文件。")) {
+    } else {
+      const ok = await askConfirm({
+        title: "删除这首歌",
+        text: "将从音乐库中删除这首歌。\n如果已下载到本地，本地文件也会一并删除，且不可恢复。",
+        okText: "删 除",
+      });
+      if (!ok) return;
       await api(`/api/tracks/${id}`, { method: "DELETE" });
       if (state.current && state.current.id === id) { audio.pause(); audio.src = ""; state.current = null; updateNowPlaying(); }
       refresh();
@@ -556,11 +560,69 @@ function openCollCtxMenu(x, y, bvid) {
       else if (it.act === "addpl") openPopoverAt(ids);
       else if (it.act === "select") { ids.forEach(i => state.selected.add(i)); syncSelecting(); renderList(); }
       else if (it.act === "delete") {
-        if (confirm(`删除整个合集「${g.title}」共 ${ids.length} 首？（含本地文件，不可恢复）`)) {
-          await deleteTracks(ids);
-          toast("合集已删除", "ok");
-          refresh();
-        }
+        const ok = await askConfirm({
+          title: "删除整个合集",
+          text: `将删除合集「${g.title}」共 ${ids.length} 首。\n已下载的本地文件也会一并删除，且不可恢复。`,
+          okText: `删除 ${ids.length} 首`,
+        });
+        if (!ok) return;
+        await deleteTracks(ids);
+        toast("合集已删除", "ok");
+        refresh();
+      }
+    } catch (err) { toast(err.message, "err"); }
+  });
+}
+
+/* ---------------- 歌单右键菜单 ---------------- */
+function openPlCtxMenu(x, y, pid) {
+  const pl = state.playlists.find((p) => p.id === pid);
+  if (!pl) return;
+  const items = [
+    { act: "play", label: `播放整个歌单（${pl.count} 首）`, icon: "M8 5v14l11-7z" },
+    { act: "queue", label: "加入播放列表", icon: "M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm13-1v-3h-2v3h-3v2h3v3h2v-3h3v-2h-3z" },
+    { sep: true },
+    { act: "rename", label: "重命名歌单", icon: "M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z" },
+  ];
+  if (pid !== 1) {
+    items.push({ act: "delete", label: "删除歌单", icon: "M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z", danger: true });
+  }
+
+  const fetchIds = async () => {
+    const list = await api(`/api/playlists/${pid}/tracks`);
+    return list.map((t) => t.id);
+  };
+
+  showMenu(x, y, items, async (it) => {
+    try {
+      if (it.act === "play") {
+        const ids = await fetchIds();
+        if (!ids.length) { toast("这个歌单还是空的", "err"); return; }
+        state.view = { type: "pl", id: pid };
+        renderSidebar();
+        playTrack(ids[0], ids);
+      } else if (it.act === "queue") {
+        const ids = await fetchIds();
+        if (!ids.length) { toast("这个歌单还是空的", "err"); return; }
+        const fresh = ids.filter((i) => !state.queue.includes(i));
+        state.queue.push(...fresh);
+        savePlaybackState();
+        updateQueueNavCount();
+        toast(`已加入 ${fresh.length} 首到播放列表`, "ok");
+        if (state.view.type === "queue") renderList();
+      } else if (it.act === "rename") {
+        openModal({ type: "rename", pid, value: pl.name });
+      } else if (it.act === "delete") {
+        const ok = await askConfirm({
+          title: "删除歌单",
+          text: `确定要删除歌单「${pl.name}」吗？\n歌单里的歌曲不会被删除，仍保留在「全部音乐」中。`,
+          okText: "删 除",
+        });
+        if (!ok) return;
+        await api(`/api/playlists/${pid}`, { method: "DELETE" });
+        if (state.view.type === "pl" && state.view.id === pid) state.view = { type: "all" };
+        toast(`已删除歌单「${pl.name}」`, "ok");
+        refresh();
       }
     } catch (err) { toast(err.message, "err"); }
   });
@@ -620,15 +682,22 @@ document.addEventListener("click", (e) => {
   }
 });
 
-/* ---------------- 新建歌单弹窗 ---------------- */
+/* ---------------- 新建 / 重命名歌单弹窗 ---------------- */
 const modal = $("#modal-overlay"), modalInput = $("#modal-input");
-function openModal() {
+let modalMode = { type: "create", pid: null };
+
+function openModal(opts = {}) {
+  modalMode = { type: opts.type || "create", pid: opts.pid || null };
+  const isRename = modalMode.type === "rename";
+  $("#modal-title").textContent = isRename ? "重命名歌单" : "新建歌单";
+  $("#modal-ok").textContent = isRename ? "保 存" : "创 建";
+  modalInput.placeholder = isRename ? "输入新的歌单名称" : "给歌单起个名字";
+  modalInput.value = opts.value || "";
   modal.hidden = false;
-  modalInput.value = "";
-  setTimeout(() => modalInput.focus(), 30);
+  setTimeout(() => { modalInput.focus(); modalInput.select(); }, 30);
 }
 function closeModal() { modal.hidden = true; }
-$("#btn-new-playlist").addEventListener("click", openModal);
+$("#btn-new-playlist").addEventListener("click", () => openModal());
 $("#modal-cancel").addEventListener("click", closeModal);
 modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
 modalInput.addEventListener("keydown", (e) => {
@@ -639,12 +708,56 @@ $("#modal-ok").addEventListener("click", async () => {
   const name = modalInput.value.trim();
   if (!name) { modalInput.focus(); return; }
   try {
-    await api("/api/playlists", { method: "POST", body: { name } });
-    toast(`已创建「${name}」`, "ok");
+    if (modalMode.type === "rename") {
+      await api(`/api/playlists/${modalMode.pid}`, { method: "PATCH", body: { name } });
+      toast(`已重命名为「${name}」`, "ok");
+    } else {
+      await api("/api/playlists", { method: "POST", body: { name } });
+      toast(`已创建「${name}」`, "ok");
+    }
     closeModal();
     refresh();
   } catch (err) { toast(err.message, "err"); }
 });
+
+/* ---------------- 通用确认弹窗（替代原生 confirm） ---------------- */
+const confirmOv = $("#confirm-overlay");
+
+function askConfirm({ title = "确认操作", text = "", okText = "确 定", danger = true } = {}) {
+  return new Promise((resolve) => {
+    $("#confirm-title").textContent = title;
+    $("#confirm-text").textContent = text;
+    const okBtn = $("#confirm-ok"), cancelBtn = $("#confirm-cancel");
+    okBtn.textContent = okText;
+    okBtn.classList.toggle("danger", danger);
+    okBtn.classList.toggle("primary", !danger);
+    confirmOv.hidden = false;
+    // 焦点给"取消"，避免误按空格直接确认
+    setTimeout(() => cancelBtn.focus(), 30);
+
+    const finish = (val) => {
+      confirmOv.hidden = true;
+      okBtn.onclick = null;
+      cancelBtn.onclick = null;
+      confirmOv.onclick = null;
+      document.removeEventListener("keydown", onKey, true);
+      resolve(val);
+    };
+    const onKey = (e) => {
+      if (e.key === "Escape") { e.stopPropagation(); finish(false); }
+      if (e.key === "Enter") { e.stopPropagation(); finish(true); }
+    };
+    okBtn.onclick = () => finish(true);
+    cancelBtn.onclick = () => finish(false);
+    confirmOv.onclick = (e) => { if (e.target === confirmOv) finish(false); };
+    document.addEventListener("keydown", onKey, true);
+  });
+}
+
+/** 是否有弹层处于打开状态 */
+function isOverlayOpen() {
+  return !modal.hidden || !confirmOv.hidden;
+}
 
 /* ==================== 播放核心 ==================== */
 function playTrack(id, queueIds) {
@@ -824,6 +937,7 @@ vol.addEventListener("input", () => {
 
 document.addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
+  if (isOverlayOpen()) return;   // 弹窗打开时不响应快捷键
   if (e.code === "Space") { e.preventDefault(); $("#btn-play").click(); }
   if (e.key === "Escape" && state.selected.size) clearSelection();
 });

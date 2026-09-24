@@ -51,12 +51,13 @@ a = Analysis(
     hooksconfig={},
     runtime_hooks=[],
     excludes=[
-        # 排除不必要的大模块减小体积
+        # 只排除确定用不到的大模块，减小体积。
+        # ⚠️ 不要排除 email / http / xml / argparse / urllib 等标准库——
+        # httpx 与 yt-dlp 会间接依赖它们，否则打包后运行时报 ModuleNotFoundError
         'tkinter',
         'unittest',
         'pydoc',
         'doctest',
-        'argparse',
         'pip',
         'setuptools',
         'wheel',

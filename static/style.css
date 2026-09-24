@@ -147,7 +147,6 @@ main {
 }
 .act-btn svg { width: 15px; height: 15px; fill: currentColor; }
 .act-btn:hover { background: var(--panel-2); color: var(--text); }
-.act-btn.dl-done:hover { color: var(--green); }
 .act-btn.danger:hover { color: var(--red); }
 
 .eq { position: absolute; inset: 0; display: flex; gap: 2px; align-items: flex-end; justify-content: center; height: 100%; background: rgba(20, 22, 30, 0.45); padding-bottom: 7px; }
@@ -320,6 +319,16 @@ body.selecting .track-row { cursor: pointer; }
 .mbtn:hover { color: var(--text); }
 .mbtn.primary { background: var(--accent); color: #fff; }
 .mbtn.primary:hover { filter: brightness(1.06); }
+.mbtn.danger { background: var(--red); color: #fff; }
+.mbtn.danger:hover { filter: brightness(1.06); }
+.mbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* 确认弹窗 */
+.confirm-modal { width: 380px; }
+.confirm-text {
+  font-size: 13.5px; color: var(--text-dim); line-height: 1.7;
+  white-space: pre-line; margin-top: -4px;
+}
 
 #toast-wrap { position: fixed; top: 18px; left: 50%; transform: translateX(-50%); z-index: 500; display: flex; flex-direction: column; gap: 8px; align-items: center; }
 .toast {
