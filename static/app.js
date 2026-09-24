@@ -261,12 +261,36 @@ function statusBadge(t) {
   return `<span class="badge online">在线</span>`;
 }
 
+/* ---------------- 封面加载（失败自动重试，避免网络抖动导致封面永久消失） ---------------- */
+function coverTag(id, { lazy = false, cls = "" } = {}) {
+  return `<img src="/api/cover/${id}"${cls ? ` class="${cls}"` : ""}`
+    + `${lazy ? ' loading="lazy"' : ""} alt="" draggable="false"`
+    + ` data-cover="${id}" onerror="window.__coverRetry(this)">`;
+}
+
+// 最多重试 3 次（递减退避），仍失败则优雅降级为占位图
+window.__coverRetry = function (img) {
+  const id = img.dataset.cover;
+  const n = (Number(img.dataset.retry) || 0) + 1;
+  img.dataset.retry = n;
+  if (n > 3) {
+    const ph = document.createElement("div");
+    ph.className = "cover-fallback";
+    ph.textContent = "🎵";
+    img.replaceWith(ph);
+    return;
+  }
+  setTimeout(() => {
+    img.src = `/api/cover/${id}?r=${n}&t=${Date.now()}`;
+  }, 350 * n);
+};
+
 /** @param {number?} queueIndex 播放列表视图中的序号 */
 function rowHtml(t, asChild = false, queueIndex = null) {
   const isPlaying = state.current && state.current.id === t.id;
   const inPlaylist = state.view.type === "pl";
   const sel = state.selected.has(t.id);
-  const cover = t.cover ? `<img src="/api/cover/${t.id}" loading="lazy" onerror="this.remove()">` : "";
+  const cover = t.cover ? coverTag(t.id, { lazy: true }) : "";
   const idxBadge = queueIndex != null ? `<div class="queue-idx">${queueIndex + 1}</div>` : "";
   return `
   <div class="track-row ${isPlaying ? "playing" : ""} ${asChild ? "coll-child" : ""}" data-id="${t.id}">
@@ -296,8 +320,7 @@ function collectionHtml(g) {
   const open = !state.collapsed.has(g.bvid);
   const allSel = g.tracks.every((t) => state.selected.has(t.id));
   const someSel = g.tracks.some((t) => state.selected.has(t.id));
-  const cover = g.tracks[0].cover
-    ? `<img src="/api/cover/${g.tracks[0].id}" onerror="this.remove()">` : "🎼";
+  const cover = g.tracks[0].cover ? coverTag(g.tracks[0].id) : "🎼";
   const doneCnt = g.tracks.filter((t) => t.download_status === "done").length;
   return `
   <div class="coll-header" data-bvid="${g.bvid}">
@@ -514,6 +537,11 @@ function openCtxMenu(x, y, trackId) {
                  icon: "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" });
   }
   items.push({ act: "addpl", label: "加入歌单…", icon: "M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm13-1v-3h-2v3h-3v2h3v3h2v-3h3v-2h-3z" });
+  if (t.cover) {
+    items.push({ act: "fixcover",
+                 label: t.local_path ? "补齐封面（存本地并内嵌）" : "缓存封面到本地",
+                 icon: "M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2zM8.5 13.5l2.5 3 3.5-4.5 4.5 6H5l3.5-4.5z" });
+  }
   if (inQueue) {
     items.push({ sep: true });
     items.push({ act: "remove-from-queue", label: "从播放列表移除", icon: "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z", danger: true });
@@ -535,6 +563,13 @@ function openCtxMenu(x, y, trackId) {
       else if (it.act === "remove-from-queue") {
         removeFromQueue(trackId);
         toast("已从播放列表移除", "ok");
+      }
+      else if (it.act === "fixcover") {
+        toast("正在补齐封面…");
+        const r = await api(`/api/tracks/${trackId}/cover`, { method: "POST" });
+        if (state.current && state.current.id === trackId) updateNowPlaying();
+        renderList();
+        toast(r.embedded ? "封面已保存并内嵌到音频文件" : "封面已缓存到本地", "ok");
       }
       else await rowAction(it.act, trackId);
     } catch (err) { toast(err.message, "err"); }
@@ -815,7 +850,7 @@ function updateNowPlaying() {
   }
   $("#np-title").textContent = t.title;
   $("#np-artist").textContent = t.artist;
-  $("#np-cover").innerHTML = t.cover ? `<img src="/api/cover/${t.id}">` : "🎵";
+  $("#np-cover").innerHTML = t.cover ? coverTag(t.id) : "🎵";
   if ("mediaSession" in navigator) {
     navigator.mediaSession.metadata = new MediaMetadata({
       title: t.title, artist: t.artist,

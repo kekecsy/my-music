@@ -56,7 +56,8 @@ def _resolve_dirs():
 
 
 DATA, MUSIC, IS_DEV = _resolve_dirs()
-for _d in (MUSIC, DATA):
+COVERS = DATA / "covers"      # 封面缓存目录（与音频分开，避免污染音频查找的 glob）
+for _d in (MUSIC, DATA, COVERS):
     if not _d.is_dir():
         _d.mkdir(parents=True, exist_ok=True)
 DB_PATH = DATA / "music.db"
@@ -127,6 +128,11 @@ def init_db():
             conn.execute("ALTER TABLE tracks ADD COLUMN album TEXT DEFAULT ''")
         conn.commit()
         conn.execute("INSERT OR IGNORE INTO playlists(id, name) VALUES(1, '我的收藏')")
+        # 进程重启后不可能还有下载线程在跑，把遗留的「下载中」标记为可重试，
+        # 否则界面会永远卡在「下载中」
+        conn.execute("""UPDATE tracks SET download_status='error', download_started=0,
+                        error_msg='下载被中断（服务重启），请点击重试'
+                        WHERE download_status='downloading'""")
         conn.commit()
     finally:
         conn.close()
@@ -290,6 +296,14 @@ def delete_track(track_id):
             os.remove(t["local_path"])
         except OSError:
             pass
+    # 曲目彻底删除时连同本地封面缓存一起清掉，避免留下孤儿文件
+    for f in globmod.glob(str(COVERS / f"{cover_stem(t)}.*")):
+        try:
+            os.remove(f)
+        except OSError:
+            pass
+    with _cover_lock:
+        _cover_cache.pop(track_id, None)
     q("DELETE FROM playlist_tracks WHERE track_id=?", (track_id,))
     q("DELETE FROM tracks WHERE id=?", (track_id,))
     return {"ok": True}
@@ -319,8 +333,16 @@ def _download_task(track_id):
             fp = max(cands, key=os.path.getmtime) if cands else None
         if not fp:
             raise RuntimeError("下载完成但未找到文件")
+        # 先落库，让界面马上显示为可播放
         q("UPDATE tracks SET local_path=?, download_status='done', error_msg='' WHERE id=?",
           (fp, track_id))
+        # 再补封面：存到本地缓存目录，并尽量内嵌进音频文件（失败不影响下载结果）
+        try:
+            cov_path, _, _ = ensure_cover(t)
+            if cov_path:
+                embed_cover(fp, cov_path)
+        except Exception:
+            pass
     except Exception as e:
         q("UPDATE tracks SET download_status='error', error_msg=? WHERE id=?",
           (str(e)[:300], track_id))
@@ -466,6 +488,143 @@ def stream(track_id, request: Request):
 
 _cover_cache = {}
 _cover_lock = threading.Lock()
+_COVER_EXT = {"image/jpeg": ".jpg", "image/jpg": ".jpg", "image/png": ".png",
+              "image/webp": ".webp", "image/gif": ".gif", "image/avif": ".avif"}
+
+
+def cover_stem(t):
+    """封面文件名主干：与曲目一一对应"""
+    return f"{t['bvid']}_p{t['page']}"
+
+
+def local_cover(t):
+    """返回已落盘的本地封面路径（没有则 None）"""
+    if not t:
+        return None
+    hits = sorted(globmod.glob(str(COVERS / f"{cover_stem(t)}.*")))
+    return hits[0] if hits else None
+
+
+def fetch_cover(t, max_bytes=12 * 1024 * 1024):
+    """抓取封面字节，成功返回 (data, ctype)，失败返回 (None, None)"""
+    if not t or not t.get("cover"):
+        return None, None
+    # B 站图床 http/https 均可，统一升级为 https 更稳
+    url = t["cover"]
+    if url.startswith("http://"):
+        url = "https://" + url[len("http://"):]
+    try:
+        r = httpx.get(url, headers=BASE_HEADERS, follow_redirects=True, timeout=20)
+        r.raise_for_status()
+        if not r.content or len(r.content) > max_bytes:
+            return None, None
+        ctype = (r.headers.get("content-type") or "image/jpeg").split(";")[0].strip().lower()
+        if not ctype.startswith("image/"):
+            ctype = "image/jpeg"
+        return r.content, ctype
+    except Exception:
+        # 退一步：用原始 URL 再试一次（个别情况 http 反而通）
+        if url != t["cover"]:
+            try:
+                r = httpx.get(t["cover"], headers=BASE_HEADERS,
+                              follow_redirects=True, timeout=20)
+                r.raise_for_status()
+                if r.content and len(r.content) <= max_bytes:
+                    ctype = (r.headers.get("content-type") or "image/jpeg").split(";")[0].strip().lower()
+                    if not ctype.startswith("image/"):
+                        ctype = "image/jpeg"
+                    return r.content, ctype
+            except Exception:
+                pass
+        return None, None
+
+
+def save_cover(t, data, ctype):
+    """把封面写入本地缓存目录，返回文件路径"""
+    ext = _COVER_EXT.get(ctype, ".jpg")
+    path = COVERS / f"{cover_stem(t)}{ext}"
+    tmp = COVERS / f".{cover_stem(t)}{ext}.tmp"
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
+    except OSError:
+        return None
+    return str(path)
+
+
+def ensure_cover(t):
+    """确保封面已落盘：本地有直接用，没有就抓取并保存。返回 (路径, 字节, ctype)"""
+    path = local_cover(t)
+    if path and os.path.getsize(path) > 0:
+        with open(path, "rb") as f:
+            return path, f.read(), None
+    data, ctype = fetch_cover(t)
+    if not data:
+        return None, None, None
+    path = save_cover(t, data, ctype)
+    return path, data, ctype
+
+
+def _find_ffmpeg():
+    """查找 ffmpeg。打包版从 Finder/资源管理器启动时 PATH 很精简，
+    所以额外探测常见的安装位置。"""
+    import shutil
+    p = shutil.which("ffmpeg")
+    if p:
+        return p
+    cands = [
+        "/opt/homebrew/bin/ffmpeg",          # macOS Apple Silicon
+        "/usr/local/bin/ffmpeg",             # macOS Intel
+        "/usr/bin/ffmpeg",                   # Linux
+        str(Path.home() / "bin" / "ffmpeg"),
+        r"C:\ffmpeg\bin\ffmpeg.exe",
+        r"C:\Program Files\ffmpeg\bin\ffmpeg.exe",
+    ]
+    for c in cands:
+        if os.path.exists(c) and os.access(c, os.X_OK):
+            return c
+    return None
+
+
+def embed_cover(audio_path, cover_path):
+    """把封面内嵌进 m4a/mp3 文件（有 ffmpeg 才做，失败不影响音频）。
+
+    先写到临时文件、校验通过后再原子替换，避免损坏已下载的音频。
+    """
+    import subprocess
+    ffmpeg = _find_ffmpeg()
+    if not ffmpeg or not audio_path or not cover_path:
+        return False
+    if not (os.path.exists(audio_path) and os.path.exists(cover_path)):
+        return False
+    ext = os.path.splitext(audio_path)[1].lower()
+    if ext not in (".m4a", ".mp4", ".mp3", ".flac", ".ogg", ".opus"):
+        return False
+    tmp = str(audio_path) + ".tmp" + ext
+    try:
+        proc = subprocess.run(
+            [ffmpeg, "-y", "-loglevel", "error", "-i", str(audio_path), "-i", str(cover_path),
+             "-map", "0:a", "-map", "1:v", "-c", "copy", "-disposition:v", "attached_pic",
+             "-metadata:s:v", "title=Album cover", "-metadata:s:v", "comment=Cover (front)", tmp],
+            capture_output=True, timeout=120,
+        )
+        if proc.returncode != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) < 1024:
+            return False
+        # 校验：能读出音频流时长，且内嵌图存在
+        chk = subprocess.run([ffmpeg, "-hide_banner", "-i", tmp], capture_output=True, timeout=60)
+        info = (chk.stderr or b"").decode("utf-8", "ignore")
+        if "Duration:" not in info or "Video:" not in info or "Audio:" not in info:
+            return False
+        os.replace(tmp, audio_path)
+        return True
+    except Exception:
+        return False
+    finally:
+        if os.path.exists(tmp):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 @app.get("/api/cover/{track_id}")
@@ -473,21 +632,62 @@ def cover(track_id):
     t = get_track(track_id)
     if not t or not t["cover"]:
         raise HTTPException(404, "no cover")
+    # 1) 内存缓存
     with _cover_lock:
         if track_id in _cover_cache:
             data, ctype = _cover_cache[track_id]
             return Response(content=data, media_type=ctype,
                             headers={"Cache-Control": "max-age=86400"})
-    try:
-        r = httpx.get(t["cover"], headers=BASE_HEADERS, follow_redirects=True, timeout=20)
-        r.raise_for_status()
-    except Exception:
+    # 2) 本地已落盘的封面（离线可用）
+    path = local_cover(t)
+    if path:
+        ext = os.path.splitext(path)[1].lower()
+        ctype = {".png": "image/png", ".webp": "image/webp",
+                 ".gif": "image/gif", ".avif": "image/avif"}.get(ext, "image/jpeg")
+        return FileResponse(path, media_type=ctype,
+                            headers={"Cache-Control": "max-age=86400"})
+    # 3) 抓取并落盘（下次离线也能用）
+    data, ctype = fetch_cover(t)
+    if not data:
         raise HTTPException(404, "cover fetch failed")
-    ctype = r.headers.get("content-type", "image/jpeg")
+    save_cover(t, data, ctype)
     with _cover_lock:
-        _cover_cache[track_id] = (r.content, ctype)
-    return Response(content=r.content, media_type=ctype,
+        _cover_cache[track_id] = (data, ctype)
+    return Response(content=data, media_type=ctype,
                     headers={"Cache-Control": "max-age=86400"})
+
+
+@app.post("/api/tracks/{track_id}/cover")
+def refresh_cover(track_id, embed: bool = True):
+    """补齐封面：落盘缓存，并（可选）内嵌进已下载的音频文件"""
+    t = get_track(track_id)
+    if not t:
+        raise HTTPException(404, "曲目不存在")
+    if not t["cover"]:
+        raise HTTPException(400, "该曲目没有封面信息")
+    path, data, ctype = ensure_cover(t)
+    if not path:
+        raise HTTPException(502, "封面获取失败，请检查网络后重试")
+    with _cover_lock:
+        _cover_cache[track_id] = (data, ctype or "image/jpeg")
+    embedded = False
+    if embed and t["local_path"] and os.path.exists(t["local_path"]):
+        embedded = embed_cover(t["local_path"], path)
+    return {"ok": True, "cover": path, "embedded": embedded}
+
+
+@app.get("/api/covers/summary")
+def covers_summary():
+    """封面补齐情况，用于界面提示"""
+    rows = q("SELECT id, bvid, page, cover, local_path FROM tracks WHERE cover IS NOT NULL AND cover <> ''",
+             fetch=True)
+    on_disk = missing = 0
+    for r in rows:
+        if local_cover(r):
+            on_disk += 1
+        else:
+            missing += 1
+    return {"total": len(rows), "on_disk": on_disk, "missing": missing}
 
 
 # ---------------- 播放列表 ----------------
