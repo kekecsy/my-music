@@ -21,6 +21,7 @@ const state = {
   retryCount: 0,
   selected: new Set(),
   collapsed: new Set(JSON.parse(localStorage.getItem("lm-collapsed") || "[]")),
+  suppressClick: false,            // 拖拽刚结束，屏蔽紧随其后的 click
 };
 
 /* ---------------- 工具 ---------------- */
@@ -149,7 +150,12 @@ function renderSidebar() {
   const fixed = nav.querySelectorAll("[data-view]");
   let html = "";
   fixed.forEach((el) => html += el.outerHTML);
-  html += `<div class="nav-sep">歌单</div>`;
+  html += `<div class="nav-sep">
+             <span>歌单</span>
+             <button id="btn-new-playlist" class="nav-add" title="新建歌单" aria-label="新建歌单">
+               <svg viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+             </button>
+           </div>`;
   html += state.playlists.map((p) => `
     <div class="nav-item ${state.view.type === "pl" && state.view.id === p.id ? "active" : ""}"
          data-pl="${p.id}" title="${escapeHtml(p.name)}">
@@ -165,6 +171,11 @@ function renderSidebar() {
       state.view = { type: el.dataset.view };
       renderSidebar(); renderList();
     });
+  });
+  // 「歌单」标题右侧的 + 按钮（每次渲染都是新节点，需重新绑定）
+  nav.querySelector("#btn-new-playlist")?.addEventListener("click", (e) => {
+    e.stopPropagation();
+    openModal({ type: "create" });
   });
   nav.querySelectorAll("[data-pl]").forEach((el) => {
     el.addEventListener("click", async () => {
@@ -215,7 +226,9 @@ async function renderList() {
     $("#view-title").textContent = state.view.type === "all" ? "全部音乐" : pl ? pl.name : "";
     $("#btn-play-all").textContent = "▶ 播放全部";
   }
-  $("#view-count").textContent = `共 ${tracks.length} 首`;
+  $("#view-count").textContent = state.view.type === "queue" && tracks.length > 1
+    ? `共 ${tracks.length} 首 · 按住拖动可调整顺序`
+    : `共 ${tracks.length} 首`;
 
   // 播放列表视图的空提示
   const isQueueEmpty = state.view.type === "queue" && tracks.length === 0;
@@ -250,7 +263,91 @@ async function renderList() {
   list.innerHTML = html;
   list.querySelectorAll(".track-row").forEach((row) => bindRow(row, Number(row.dataset.id)));
   list.querySelectorAll(".coll-header").forEach((h) => bindCollHeader(h));
+  if (state.view.type === "queue") bindQueueDrag(list);
   updateSelBar();
+}
+
+/* ---------------- 播放列表拖拽排序 ---------------- */
+let dragId = null;
+const dragList = $("#track-list");
+
+function clearDropMarks() {
+  dragList.querySelectorAll(".drop-before, .drop-after")
+    .forEach((el) => el.classList.remove("drop-before", "drop-after"));
+  dragList.classList.remove("drop-active");
+}
+
+/** 按指针 Y 坐标判断应插到哪一行的之前/之后 */
+function pickDropTarget(rows, y) {
+  for (const row of rows) {
+    const r = row.getBoundingClientRect();
+    if (y < r.top + r.height / 2) return { row, after: false };
+  }
+  return rows.length ? { row: rows[rows.length - 1], after: true } : null;
+}
+
+/** 把 moveId 移到 targetId 之前/之后。按 id 定位，不依赖渲染下标 */
+function reorderQueue(moveId, targetId, after) {
+  if (moveId === targetId) return false;
+  const q = state.queue;
+  const from = q.indexOf(moveId);
+  if (from < 0 || q.indexOf(targetId) < 0) return false;
+  q.splice(from, 1);
+  const to = q.indexOf(targetId);          // 移除后目标下标可能前移，需重新取
+  q.splice(after ? to + 1 : to, 0, moveId);
+  savePlaybackState();
+  updateQueueNavCount();
+  renderList();
+  return true;
+}
+
+// 容器级监听只绑定一次：renderList 每次都会替换行节点，
+// 若把监听绑在容器上又每次渲染都绑，会重复累积
+dragList.addEventListener("dragover", (e) => {
+  if (dragId == null) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+  const t = pickDropTarget([...dragList.querySelectorAll(".track-row")], e.clientY);
+  clearDropMarks();
+  if (t) {
+    t.row.classList.add(t.after ? "drop-after" : "drop-before");
+    dragList.classList.add("drop-active");
+  }
+});
+dragList.addEventListener("dragleave", (e) => {
+  if (!dragList.contains(e.relatedTarget)) clearDropMarks();
+});
+dragList.addEventListener("drop", (e) => {
+  if (dragId == null) return;
+  e.preventDefault();
+  const t = pickDropTarget([...dragList.querySelectorAll(".track-row")], e.clientY);
+  clearDropMarks();
+  if (t && reorderQueue(dragId, Number(t.row.dataset.id), t.after)) {
+    toast("已调整播放顺序", "ok");
+  }
+});
+
+/** 每次渲染后给行节点绑定拖动事件（行节点是新建的，不会累积） */
+function bindQueueDrag(list) {
+  list.querySelectorAll(".track-row").forEach((row) => {
+    row.draggable = true;
+    row.addEventListener("dragstart", (e) => {
+      dragId = Number(row.dataset.id);
+      e.dataTransfer.effectAllowed = "move";
+      try { e.dataTransfer.setData("text/plain", String(dragId)); } catch (_) {}
+      row.classList.add("dragging");
+      document.body.classList.add("queue-dragging");
+    });
+    row.addEventListener("dragend", () => {
+      row.classList.remove("dragging");
+      document.body.classList.remove("queue-dragging");
+      clearDropMarks();
+      dragId = null;
+      // 拖拽结束后部分浏览器会补发一次 click，屏蔽掉以免误触发播放
+      state.suppressClick = true;
+      setTimeout(() => { state.suppressClick = false; }, 150);
+    });
+  });
 }
 
 function statusBadge(t) {
@@ -291,9 +388,16 @@ function rowHtml(t, asChild = false, queueIndex = null) {
   const inPlaylist = state.view.type === "pl";
   const sel = state.selected.has(t.id);
   const cover = t.cover ? coverTag(t.id, { lazy: true }) : "";
-  const idxBadge = queueIndex != null ? `<div class="queue-idx">${queueIndex + 1}</div>` : "";
+  const draggable = queueIndex != null;   // 仅播放列表视图支持拖动排序
+  const idxBadge = draggable
+    ? `<div class="queue-idx" title="按住拖动调整播放顺序">
+         <span class="qi-num">${queueIndex + 1}</span>
+         <svg class="qi-grip" viewBox="0 0 24 24"><path d="M11 18c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zm-2-8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>
+       </div>`
+    : "";
   return `
-  <div class="track-row ${isPlaying ? "playing" : ""} ${asChild ? "coll-child" : ""}" data-id="${t.id}">
+  <div class="track-row ${isPlaying ? "playing" : ""} ${asChild ? "coll-child" : ""}"
+       data-id="${t.id}"${draggable ? ' draggable="true"' : ""}>
     <div class="row-check ${sel ? "on" : ""}" data-check="${t.id}"></div>
     <div class="c-cover">${cover}${isPlaying ? '<div class="eq"><i></i><i></i><i></i></div>' : ""}${idxBadge}</div>
     <div class="c-title-wrap">
@@ -342,6 +446,7 @@ function collectionHtml(g) {
 /* ---------------- 行 / 合集事件 ---------------- */
 function bindRow(row, id) {
   row.addEventListener("click", async (e) => {
+    if (state.suppressClick) return;   // 刚拖拽完，忽略这次点击
     if (e.target.closest(".act-btn") || e.target.closest(".badge")) return;
     const check = e.target.closest(".row-check");
     if (check || document.body.classList.contains("selecting")) { toggleSel(id); return; }
@@ -732,7 +837,6 @@ function openModal(opts = {}) {
   setTimeout(() => { modalInput.focus(); modalInput.select(); }, 30);
 }
 function closeModal() { modal.hidden = true; }
-$("#btn-new-playlist").addEventListener("click", () => openModal());
 $("#modal-cancel").addEventListener("click", closeModal);
 modal.addEventListener("click", (e) => { if (e.target === modal) closeModal(); });
 modalInput.addEventListener("keydown", (e) => {
