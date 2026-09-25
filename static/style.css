@@ -181,11 +181,14 @@ main {
 .track-row:hover .queue-idx .qi-grip { display: block; }
 .queue-idx:active { cursor: grabbing; }
 
-/* ---------- 播放列表拖拽排序 ---------- */
+/* ---------- 拖动排序（播放列表 / 歌单） ---------- */
 .track-row.dragging { opacity: 0.35; }
 .track-row.drop-before { box-shadow: inset 0 2px 0 var(--accent); }
 .track-row.drop-after { box-shadow: inset 0 -2px 0 var(--accent); }
 .track-list.drop-active { background: var(--accent-soft); border-radius: 10px; }
+/* 拖拽中让行的子元素退出命中测试：光标跨子元素时不再产生 dragenter/dragleave 抖动，
+   否则叠加浏览器对 dragover 的节流，松手时可能丢失 drop */
+body.queue-dragging .track-row > * { pointer-events: none; }
 
 .empty-tip { text-align: center; padding: 70px 0; color: var(--text-dim); }
 .empty-icon { font-size: 44px; margin-bottom: 12px; }

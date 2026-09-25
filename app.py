@@ -779,6 +779,37 @@ def remove_from_playlist(pid, track_id):
     return {"ok": True}
 
 
+@app.post("/api/playlists/{pid}/reorder")
+def reorder_playlist_tracks(pid, payload: TrackIdsIn):
+    """按传入的 track_ids 顺序重写歌单内的 position。
+
+    传部分 ids 也能用：未提交的曲目按原顺序补在末尾，避免漏传导致排序错乱。
+    """
+    if not q("SELECT 1 FROM playlists WHERE id=?", (pid,), fetch=True):
+        raise HTTPException(404, "歌单不存在")
+    existing = [r["track_id"] for r in
+                q("SELECT track_id FROM playlist_tracks WHERE playlist_id=?", (pid,), fetch=True)]
+    if not existing:
+        raise HTTPException(400, "歌单是空的")
+
+    want = [i for i in payload.track_ids if isinstance(i, int) and i in existing]
+    seen, order = set(), []
+    for tid in want + existing:            # existing 兜底补全
+        if tid not in seen:
+            seen.add(tid)
+            order.append(tid)
+
+    conn = db()
+    try:
+        conn.executemany(
+            "UPDATE playlist_tracks SET position=? WHERE playlist_id=? AND track_id=?",
+            [(pos, pid, tid) for pos, tid in enumerate(order, start=1)])
+        conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True, "count": len(order)}
+
+
 app.mount("/", StaticFiles(directory=str(STATIC), html=True), name="static")
 
 
