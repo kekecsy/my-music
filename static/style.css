@@ -195,27 +195,47 @@ body.queue-dragging .track-row > * { pointer-events: none; }
 .empty-tip .sub { font-size: 12px; margin-top: 6px; }
 
 /* ---------- 多P合集 ---------- */
+/* 与 .track-row 共用同一套列宽与左右内边距，合集头的勾选框 / 封面 / 标题
+   才会和单曲行严格对齐（历史实现用的是 flex + 独立箭头列，封面会右偏 37px） */
 .coll-header {
-  display: flex; align-items: center; gap: 10px; margin: 12px 22px 4px;
-  padding: 9px 14px; border-radius: 12px; cursor: pointer; user-select: none;
+  display: grid;
+  grid-template-columns: 26px 44px minmax(0, 1fr) auto;
+  align-items: center; gap: 8px; margin: 12px 0 4px;
+  /* 22 - 1px 边框，让内容起点与 .track-row 的 22px 内边距严格重合 */
+  padding: 9px 21px;
+  border-radius: 10px; cursor: pointer; user-select: none;
   background: linear-gradient(135deg, #e8f1fe 0%, #f4f8ff 100%);
   border: 1px solid #d7e5fb;
 }
 .coll-header:hover { border-color: var(--accent); }
-.coll-arrow { width: 16px; height: 16px; fill: var(--text-dim); flex-shrink: 0; transition: transform 0.18s ease; }
+/* 展开箭头叠在封面上（与封面同格、居中），不额外占列，避免把封面挤偏 */
+.coll-arrow {
+  grid-column: 2; grid-row: 1; justify-self: center; align-self: center; z-index: 1;
+  width: 18px; height: 18px; padding: 2px; box-sizing: border-box;
+  fill: var(--accent); background: rgba(255, 255, 255, 0.94); border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(20, 40, 75, 0.2);
+  transition: transform 0.18s ease;
+}
 .coll-arrow.open { transform: rotate(90deg); }
 .coll-cover {
-  width: 38px; height: 38px; border-radius: 9px; background: var(--panel-2);
-  display: flex; align-items: center; justify-content: center; font-size: 17px;
-  flex-shrink: 0; overflow: hidden; color: var(--accent);
+  grid-column: 2; grid-row: 1; justify-self: start;
+  width: 40px; height: 40px; border-radius: 8px; background: var(--panel-2);
+  display: flex; align-items: center; justify-content: center; font-size: 18px;
+  overflow: hidden; color: var(--accent); position: relative;
 }
 .coll-cover img { width: 100%; height: 100%; object-fit: cover; }
-.coll-title-wrap { min-width: 0; flex: 1; }
+.coll-title-wrap { min-width: 0; }
 .coll-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .coll-sub { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
 .coll-sub b { color: var(--accent); font-weight: 600; }
 .coll-act { display: flex; gap: 4px; flex-shrink: 0; }
-.track-row.coll-child { margin-left: 26px; margin-right: 6px; }
+/* 展开后的子行同样不再水平内缩，封面与合集头 / 普通行落在同一竖线上；
+   隶属关系改由左侧一条细竖线表达，避免三套缩进各自为政 */
+.track-row.coll-child { margin: 0; position: relative; }
+.track-row.coll-child::before {
+  content: ""; position: absolute; left: 11px; top: 0; bottom: 0; width: 2px;
+  background: #d7e5fb; border-radius: 1px;
+}
 
 /* ---------- 勾选 / 多选模式 ---------- */
 .row-check {
