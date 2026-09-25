@@ -108,6 +108,7 @@ def init_db():
             local_path TEXT, download_status TEXT DEFAULT 'none',
             download_started REAL DEFAULT 0,
             error_msg TEXT DEFAULT '',
+            coll_total INTEGER DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now','localtime'))
         );
         CREATE TABLE IF NOT EXISTS playlists(
@@ -126,6 +127,8 @@ def init_db():
             conn.execute("ALTER TABLE tracks ADD COLUMN download_started REAL DEFAULT 0")
         if "album" not in cols:
             conn.execute("ALTER TABLE tracks ADD COLUMN album TEXT DEFAULT ''")
+        if "coll_total" not in cols:
+            conn.execute("ALTER TABLE tracks ADD COLUMN coll_total INTEGER DEFAULT 0")
         conn.commit()
         conn.execute("INSERT OR IGNORE INTO playlists(id, name) VALUES(1, '我的收藏')")
         # 进程重启后不可能还有下载线程在跑，把遗留的「下载中」标记为可重试，
@@ -208,8 +211,74 @@ def entry_to_track(e, fallback_bvid):
     }
 
 
+BILI_VIEW_API = "https://api.bilibili.com/x/web-interface/view"
+
+
+def bili_view(bvid):
+    """B 站官方 API：一次请求就返回合集标题、总 P 数和每一 P 的标题/时长/封面。
+
+    比用 yt-dlp 逐条解析快得多 —— 60 P 的视频让 yt-dlp 全量解析会直接超时。
+    字段与 yt-dlp 对齐（已实测：标题格式、UP 主名、封面 URL 都一致）。
+    """
+    try:
+        r = httpx.get(BILI_VIEW_API, params={"bvid": bvid},
+                      headers=BASE_HEADERS, timeout=15)
+        data = (r.json() or {}).get("data")
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def collection_tracks(data):
+    """把 view API 的 pages[] 转成待入库的曲目列表。
+
+    标题沿用 yt-dlp 的格式 `{合集标题} p{页码:02d} {分P名}`，保证前后一致。
+    """
+    bvid = data.get("bvid") or ""
+    vtitle = (data.get("title") or "").strip()
+    artist = ((data.get("owner") or {}).get("name") or "").strip()
+    cover = data.get("pic") or ""
+    out = []
+    for p in data.get("pages") or []:
+        page = int(p.get("page") or 1)
+        part = (p.get("part") or "").strip()
+        title = (f"{vtitle} p{page:02d} {part}".strip()) if part else f"{vtitle} p{page:02d}"
+        out.append({
+            "bvid": bvid,
+            "page": page,
+            "url": f"https://www.bilibili.com/video/{bvid}?p={page}",
+            "title": title or f"未知标题 p{page}",
+            "artist": artist,
+            "cover": cover,
+            "duration": int(p.get("duration") or 0),
+        })
+    return out
+
+
+def insert_tracks(items, album="", coll_total=0):
+    """批量入库并加入「我的收藏」，返回 (新增 id 列表, 跳过数)"""
+    added, skipped = [], 0
+    for t in items:
+        try:
+            tid = q(
+                """INSERT INTO tracks(bvid, page, url, title, artist, album,
+                                     coll_total, cover, duration)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (t["bvid"], t["page"], t["url"], t["title"], t["artist"],
+                 album, coll_total, t.get("cover") or "", t.get("duration") or 0),
+            )
+            q("""INSERT OR IGNORE INTO playlist_tracks(playlist_id, track_id, position)
+                 VALUES(1, ?, (SELECT COALESCE(MAX(position),0)+1 FROM playlist_tracks WHERE playlist_id=1))""",
+              (tid,))
+            added.append(tid)
+        except sqlite3.IntegrityError:
+            skipped += 1
+    return added, skipped
+
+
 class TrackIn(BaseModel):
     url: str
+    mode: str = "auto"          # auto / single / collection
 
 
 class NameIn(BaseModel):
@@ -225,6 +294,30 @@ class TrackIdsIn(BaseModel):
 
 
 # ---------------- 收藏 ----------------
+@app.get("/api/bili/inspect")
+def inspect_bili(url: str = ""):
+    """收藏前探测：这个链接是不是多 P 视频中的一集？
+
+    前端据此决定要不要弹窗问「只收藏这一集 / 收藏整个合集」。
+    """
+    parsed = normalize_url(url)
+    if not parsed:
+        raise HTTPException(400, "无法识别链接，请粘贴 B 站视频链接、BV 号或 b23.tv 短链")
+    base_url, page = parsed
+    bvid = BV_RE.search(base_url).group(1)
+    data = bili_view(bvid)
+    if not data:
+        raise HTTPException(400, "无法获取视频信息，请稍后重试")
+    total = int(data.get("videos") or 0)
+    return {
+        "bvid": bvid,
+        "title": (data.get("title") or "").strip(),
+        "page": page,
+        "total": total,
+        "multi": total > 1,
+    }
+
+
 @app.post("/api/tracks")
 def add_tracks(payload: TrackIn):
     parsed = normalize_url(payload.url)
@@ -232,39 +325,74 @@ def add_tracks(payload: TrackIn):
         raise HTTPException(400, "无法识别链接，请粘贴 B 站视频链接、BV 号或 b23.tv 短链")
     base_url, page = parsed
     bvid = BV_RE.search(base_url).group(1)
-    extra = {"playlist_items": str(page)} if page else None
+    mode = (payload.mode or "auto").strip().lower()
+    if mode not in ("auto", "single", "collection"):
+        raise HTTPException(400, "不支持的收藏模式")
+
+    # 合集元数据：标题 + 总 P 数。顺带判断带 ?p= 的链接是否属于多 P 视频
+    data = bili_view(bvid) or {}
+    total = int(data.get("videos") or 0)
+    album = (data.get("title") or "").strip()
+
+    # 整辑收藏走官方 API 元数据，逐条 yt-dlp 解析在长合集上会超时
+    if data and (mode == "collection" or (mode == "auto" and page is None and total > 1)):
+        items = collection_tracks(data)
+        if not items:
+            raise HTTPException(400, "未解析到可用的分P")
+        added, skipped = insert_tracks(items, album, total)
+        return {"added": added, "skipped": skipped, "mode": "collection",
+                "album": album, "total": total}
+
+    # 单集收藏（整辑收藏时 API 不可用的兜底也走这里）
+    extra = {"playlist_items": str(page)} if (page and mode != "collection") else None
     try:
         with yt_dlp.YoutubeDL(base_ydl(extra)) as ydl:
             info = ydl.extract_info(base_url, download=False)
     except Exception as e:
         raise HTTPException(400, f"解析失败：{str(e)[:200]}")
-    entries = list(info.get("entries") or [info])
-    entries = [e for e in entries if e and e.get("webpage_url")]
+    entries = [e for e in (info.get("entries") or [info]) if e and e.get("webpage_url")]
     if not entries:
         raise HTTPException(400, "未解析到可用的视频")
 
-    # 多P视频：整辑标题存入 album，前端按合集分组展示
-    album_title = ""
-    if len(entries) > 1:
-        album_title = (info.get("title") or "").strip() or (entries[0].get("title") or "")
+    # 这次收藏涉及几 P：API 给了总 P 数就用它，否则看 yt-dlp 实际吐了几条
+    coll_total = total if total > 1 else (len(entries) if len(entries) > 1 else 0)
+    if coll_total:
+        # 兜底：API 拿不到合集标题时，用 yt-dlp 的 playlist 标题补上
+        if not album:
+            album = (info.get("title") or "").strip() or (entries[0].get("title") or "")
+    else:
+        album = ""      # 单 P 视频不是合集，不该写 album
 
-    added, skipped = [], 0
-    for e in entries:
-        t = entry_to_track(e, bvid)
-        try:
-            tid = q(
-                """INSERT INTO tracks(bvid, page, url, title, artist, album, cover, duration)
-                   VALUES(?,?,?,?,?,?,?,?)""",
-                (t["bvid"], t["page"], t["url"], t["title"], t["artist"],
-                 album_title, t["cover"], t["duration"]),
-            )
-            q("""INSERT OR IGNORE INTO playlist_tracks(playlist_id, track_id, position)
-                 VALUES(1, ?, (SELECT COALESCE(MAX(position),0)+1 FROM playlist_tracks WHERE playlist_id=1))""",
-              (tid,))
-            added.append(tid)
-        except sqlite3.IntegrityError:
-            skipped += 1
-    return {"added": added, "skipped": skipped}
+    items = [entry_to_track(e, bvid) for e in entries]
+    added, skipped = insert_tracks(items, album, coll_total)
+    # 顺带补正该合集已有曲目的归属信息（老数据可能是空的），重复收藏也能自愈
+    if coll_total and album:
+        q("UPDATE tracks SET album=?, coll_total=? WHERE bvid=?", (album, coll_total, bvid))
+    return {"added": added, "skipped": skipped, "mode": "single",
+            "album": album, "total": coll_total}
+
+
+@app.post("/api/tracks/{track_id}/collect-rest")
+def collect_rest(track_id):
+    """把这首歌所属合集里还没收藏的分 P 一次补齐。
+
+    顺带把该 bvid 下所有曲目的 album / coll_total 补正（老数据可能是空的），
+    这样单集收藏过的合集也能正确显示成「合集 · 1 / 共 60 P」。
+    """
+    t = get_track(track_id)
+    if not t:
+        raise HTTPException(404, "曲目不存在")
+    data = bili_view(t["bvid"])
+    if not data:
+        raise HTTPException(400, "无法获取该视频的分P信息，请稍后重试")
+    total = int(data.get("videos") or 0)
+    if total <= 1:
+        raise HTTPException(400, "这个视频只有 1 P，不是合集")
+    album = (data.get("title") or "").strip()
+    q("UPDATE tracks SET album=?, coll_total=? WHERE bvid=?", (album, total, t["bvid"]))
+    added, skipped = insert_tracks(collection_tracks(data), album, total)
+    return {"ok": True, "added": added, "skipped": skipped,
+            "total": total, "album": album}
 
 
 @app.get("/api/tracks")

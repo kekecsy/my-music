@@ -133,14 +133,17 @@ function buildGroups(tracks) {
   }
   return order.map((bvid) => {
     const list = byBvid.get(bvid);
-    if (list.length <= 1) return { collection: false, tracks: list };
     const sorted = [...list].sort((a, b) => (a.page || 1) - (b.page || 1));
+    const total = Math.max(sorted[0].coll_total || 0, 0);
+    // 判定为合集：同一个 bvid 收了不止一 P，或者它所属视频本来就有多 P。
+    // 后者对应「只收藏了其中某一集」，也要能看出它属于一个系列。
+    if (sorted.length <= 1 && total <= 1) return { collection: false, tracks: sorted };
     let title = sorted[0].album || "";
     if (!title) {
       const p = commonPrefix(sorted.map((t) => t.title || ""));
       title = p.length >= 6 ? p : sorted[0].title;
     }
-    return { collection: true, bvid, title, tracks: sorted };
+    return { collection: true, bvid, title, total, tracks: sorted };
   });
 }
 
@@ -499,6 +502,11 @@ function collectionHtml(g) {
   const someSel = g.tracks.some((t) => state.selected.has(t.id));
   const cover = g.tracks[0].cover ? coverTag(g.tracks[0].id) : "🎼";
   const doneCnt = g.tracks.filter((t) => t.download_status === "done").length;
+  const total = g.total || 0;
+  const missing = total - g.tracks.length;
+  const label = total > 1
+    ? (missing > 0 ? `合集 · 已收 ${g.tracks.length} / 共 ${total} P` : `合集 · ${total} P`)
+    : `合集 · ${g.tracks.length} 首`;
   return `
   <div class="coll-header" data-bvid="${g.bvid}">
     <div class="row-check ${allSel ? "on" : someSel ? "half" : ""}" data-checkgroup="${g.bvid}"></div>
@@ -506,12 +514,15 @@ function collectionHtml(g) {
     <div class="coll-cover">${cover}</div>
     <div class="coll-title-wrap">
       <div class="coll-title">${escapeHtml(g.title)}</div>
-      <div class="coll-sub">合集 · ${g.tracks.length} 首${doneCnt ? ` · 已下载 <b>${doneCnt}</b>` : ""}</div>
+      <div class="coll-sub">${label}${doneCnt ? ` · 已下载 <b>${doneCnt}</b>` : ""}</div>
     </div>
     <div class="coll-act">
       <button class="act-btn" data-coll="play" title="播放整个合集"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></button>
       <button class="act-btn" data-coll="download" title="下载整个合集"><svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>
       <button class="act-btn" data-coll="addpl" title="合集加入歌单"><svg viewBox="0 0 24 24"><path d="M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm13-1v-3h-2v3h-3v2h3v3h2v-3h3v-2h-3z"/></svg></button>
+      ${missing > 0
+        ? `<button class="act-btn" data-coll="rest" title="收藏整个合集（还差 ${missing} P）"><svg viewBox="0 0 24 24"><path d="M4 6H2v14a2 2 0 0 0 2 2h14v-2H4V6zm16-4H8a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm-1 9h-3v3h-2v-3h-3V9h3V6h2v3h3v2z"/></svg></button>`
+        : ""}
     </div>
   </div>`;
 }
@@ -554,6 +565,12 @@ function bindCollHeader(h) {
         if (act === "play") playTrack(ids[0], ids);
         else if (act === "download") { await downloadMany(ids); toast("合集开始下载…", "ok"); }
         else if (act === "addpl") openPopoverAt(ids);
+        else if (act === "rest") {
+          toast("正在收集合集…");
+          const r = await api(`/api/tracks/${ids[0]}/collect-rest`, { method: "POST" });
+          toast(r.added.length ? `已补齐合集，新增 ${r.added.length} 首` : "合集已经收齐了", "ok");
+          refresh();
+        }
       } catch (err) { toast(err.message, "err"); }
     });
   });
@@ -715,6 +732,12 @@ function openCtxMenu(x, y, trackId) {
                  icon: "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" });
   }
   items.push({ act: "addpl", label: "加入歌单…", icon: "M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm13-1v-3h-2v3h-3v2h3v3h2v-3h3v-2h-3z" });
+  // 只收藏了多 P 视频里的某一集时，给一个把整个合集收齐的入口
+  if ((t.coll_total || 0) > 1) {
+    items.push({ act: "collect-rest",
+                 label: `收藏整个合集（共 ${t.coll_total} P）`,
+                 icon: "M4 6H2v14a2 2 0 0 0 2 2h14v-2H4V6zm16-4H8a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm-1 9h-3v3h-2v-3h-3V9h3V6h2v3h3v2z" });
+  }
   if (t.cover) {
     items.push({ act: "fixcover",
                  label: t.local_path ? "补齐封面（存本地并内嵌）" : "缓存封面到本地",
@@ -749,6 +772,12 @@ function openCtxMenu(x, y, trackId) {
         renderList();
         toast(r.embedded ? "封面已保存并内嵌到音频文件" : "封面已缓存到本地", "ok");
       }
+      else if (it.act === "collect-rest") {
+        toast("正在收集合集…");
+        const r = await api(`/api/tracks/${trackId}/collect-rest`, { method: "POST" });
+        toast(r.added.length ? `已补齐合集，新增 ${r.added.length} 首` : "合集已经收齐了", "ok");
+        refresh();
+      }
       else await rowAction(it.act, trackId);
     } catch (err) { toast(err.message, "err"); }
   });
@@ -761,16 +790,28 @@ function openCollCtxMenu(x, y, bvid) {
   const items = [
     { act: "play", label: `播放整个合集（${ids.length} 首）`, icon: "M8 5v14l11-7z" },
     { act: "download", label: "下载整个合集", icon: "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" },
+  ];
+  if ((g.total || 0) > ids.length) {
+    items.push({ act: "rest", label: `收藏整个合集（还差 ${g.total - ids.length} P）`,
+                 icon: "M4 6H2v14a2 2 0 0 0 2 2h14v-2H4V6zm16-4H8a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V4a2 2 0 0 0-2-2zm-1 9h-3v3h-2v-3h-3V9h3V6h2v3h3v2z" });
+  }
+  items.push(
     { act: "addpl", label: "合集加入歌单…", icon: "M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm13-1v-3h-2v3h-3v2h3v3h2v-3h3v-2h-3z" },
     { act: "select", label: "全选本合集", icon: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" },
     { sep: true },
     { act: "delete", label: "删除整个合集（含本地文件）", icon: "M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z", danger: true },
-  ];
+  );
   showMenu(x, y, items, async (it) => {
     try {
       if (it.act === "play") playTrack(ids[0], ids);
       else if (it.act === "download") { await downloadMany(ids); toast("合集开始下载…", "ok"); }
       else if (it.act === "addpl") openPopoverAt(ids);
+      else if (it.act === "rest") {
+        toast("正在收集合集…");
+        const r = await api(`/api/tracks/${ids[0]}/collect-rest`, { method: "POST" });
+        toast(r.added.length ? `已补齐合集，新增 ${r.added.length} 首` : "合集已经收齐了", "ok");
+        refresh();
+      }
       else if (it.act === "select") { ids.forEach(i => state.selected.add(i)); syncSelecting(); renderList(); }
       else if (it.act === "delete") {
         const ok = await askConfirm({
@@ -936,12 +977,14 @@ $("#modal-ok").addEventListener("click", async () => {
 /* ---------------- 通用确认弹窗（替代原生 confirm） ---------------- */
 const confirmOv = $("#confirm-overlay");
 
-function askConfirm({ title = "确认操作", text = "", okText = "确 定", danger = true } = {}) {
+function askConfirm({ title = "确认操作", text = "", okText = "确 定",
+                      cancelText = "取 消", danger = true } = {}) {
   return new Promise((resolve) => {
     $("#confirm-title").textContent = title;
     $("#confirm-text").textContent = text;
     const okBtn = $("#confirm-ok"), cancelBtn = $("#confirm-cancel");
     okBtn.textContent = okText;
+    cancelBtn.textContent = cancelText;
     okBtn.classList.toggle("danger", danger);
     okBtn.classList.toggle("primary", !danger);
     confirmOv.hidden = false;
@@ -1050,9 +1093,10 @@ $("#btn-add").addEventListener("click", async () => {
   const btn = $("#btn-add");
   btn.disabled = true; btn.textContent = "解析中…";
   try {
-    const res = await api("/api/tracks", { method: "POST", body: { url } });
+    const res = await addByUrl(url);
     if (res.added.length) {
-      toast(`已收藏 ${res.added.length} 首${res.skipped ? `（跳过已存在 ${res.skipped} 首）` : ""}`, "ok");
+      const prefix = res.mode === "collection" ? "已收藏整个合集，" : "已收藏 ";
+      toast(`${prefix}${res.added.length} 首${res.skipped ? `（跳过已存在 ${res.skipped} 首）` : ""}`, "ok");
     }
     else toast(res.skipped ? "都已收藏过了" : "没有可收藏的内容", "err");
     $("#url-input").value = "";
@@ -1060,6 +1104,24 @@ $("#btn-add").addEventListener("click", async () => {
   } catch (err) { toast(err.message, "err"); }
   btn.disabled = false; btn.textContent = "收 藏";
 });
+
+/** 粘贴的若是多 P 视频里某一集的链接，先问一句：只要这一集，还是整个合集？ */
+async function addByUrl(url) {
+  let mode = "auto";
+  // 探测失败不阻断收藏，退回原来的行为
+  const meta = await api(`/api/bili/inspect?url=${encodeURIComponent(url)}`).catch(() => null);
+  if (meta && meta.multi && meta.page) {
+    const whole = await askConfirm({
+      title: "这是个多 P 视频",
+      text: `《${meta.title}》共 ${meta.total} P，你粘贴的是第 ${meta.page} P。\n\n要把整个合集都收藏进来吗？`,
+      okText: `收藏整个合集（${meta.total} P）`,
+      cancelText: `只要第 ${meta.page} P`,
+      danger: false,
+    });
+    mode = whole ? "collection" : "single";
+  }
+  return api("/api/tracks", { method: "POST", body: { url, mode } });
+}
 $("#url-input").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#btn-add").click(); });
 
 document.querySelector('[data-view="all"]').addEventListener("click", () => {
