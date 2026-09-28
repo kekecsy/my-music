@@ -377,6 +377,30 @@ body.selecting .track-row { cursor: pointer; }
   white-space: pre-line; margin-top: -4px;
 }
 
+/* 分享弹窗 */
+.share-modal { width: 430px; }
+.share-sub {
+  font-size: 12.5px; color: var(--text-dim); line-height: 1.6;
+  margin: -8px 0 12px; word-break: break-all;
+}
+.share-url {
+  width: 100%; padding: 10px 12px; border: 1.5px solid var(--line); border-radius: 10px;
+  font-size: 12.5px; color: var(--text); background: var(--bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  text-overflow: ellipsis;
+}
+.share-url:focus { border-color: var(--accent); background: var(--panel); }
+
+/* 播放栏的分享按钮：hover 播放器时才浮现，避免干扰 */
+.np-share {
+  width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-dim); opacity: 0; transition: opacity 0.15s ease;
+}
+#player:hover .np-share, .np-share:focus-visible { opacity: 1; }
+.np-share:hover { background: var(--panel-2); color: var(--accent); }
+.np-share svg { width: 16px; height: 16px; fill: currentColor; }
+
 #toast-wrap { position: fixed; top: 18px; left: 50%; transform: translateX(-50%); z-index: 500; display: flex; flex-direction: column; gap: 8px; align-items: center; }
 .toast {
   background: var(--panel); border: 1px solid var(--line); color: var(--text);

@@ -685,6 +685,87 @@ function updateQueueNavCount() {
   if (qItem) qItem.textContent = state.queue.length;
 }
 
+/* ---------------- 分享链接 ---------------- */
+const SHARE_ICON = "M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z";
+
+/** 这首歌在 B 站的原始链接；多 P 视频带上 ?p=，分享出去对方会直接落到这一集 */
+function shareUrlOf(t) {
+  if (!t || !t.bvid) return "";
+  const p = Number(t.page) || 1;
+  return `https://www.bilibili.com/video/${t.bvid}${p > 1 ? `?p=${p}` : ""}`;
+}
+
+/** 整辑链接（不带 ?p=，对方打开后可自行挑分P） */
+function shareCollUrl(bvid) {
+  return bvid ? `https://www.bilibili.com/video/${bvid}` : "";
+}
+
+/**
+ * 复制文本到剪贴板。
+ * navigator.clipboard 只在安全上下文可用 —— 用 localhost 访问时正常，
+ * 但若通过局域网 IP（http://192.168.x.x:8790）打开就会失效，所以要留降级路径。
+ */
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    try { await navigator.clipboard.writeText(text); return true; } catch (_) { /* 落到降级 */ }
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.cssText = "position:fixed;top:-1000px;left:0;opacity:0;";
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    const ok = document.execCommand("copy");
+    ta.remove();
+    return ok;
+  } catch (_) { return false; }
+}
+
+const shareOv = $("#share-overlay");
+
+/** 打开分享弹窗。item = { title, sub, url, info } */
+function openShare(item) {
+  $("#share-title").textContent = item.title;
+  $("#share-sub").textContent = item.sub || "";
+  const input = $("#share-url");
+  input.value = item.url;
+  input.dataset.info = item.info || item.url;
+  shareOv.hidden = false;
+  // 自动选中，即使复制 API 不可用也能直接 ⌘C
+  setTimeout(() => { input.focus(); input.select(); }, 30);
+}
+
+function closeShare() { shareOv.hidden = true; }
+
+/** 分享一首歌 */
+function shareTrack(t) {
+  if (!t) return;
+  const url = shareUrlOf(t);
+  if (!url) { toast("这首歌缺少 B 站来源信息，无法分享", "err"); return; }
+  openShare({
+    title: "分享链接",
+    sub: `${t.title}${t.artist ? ` · ${t.artist}` : ""}`,
+    url,
+    info: `${t.title}${t.artist ? ` - ${t.artist}` : ""}\n${url}`,
+  });
+}
+
+/** 分享整个合集 */
+function shareCollection(g) {
+  if (!g) return;
+  const url = shareCollUrl(g.bvid);
+  if (!url) { toast("这个合集缺少 B 站来源信息，无法分享", "err"); return; }
+  const total = g.total || g.tracks.length;
+  openShare({
+    title: "分享合集链接",
+    sub: `${g.title} · 共 ${total} P，对方打开后可在分P列表里挑`,
+    url,
+    info: `${g.title}\n${url}`,
+  });
+}
+
 /* ---------------- 右键菜单 ---------------- */
 const ctx = $("#ctx-menu");
 
@@ -732,6 +813,7 @@ function openCtxMenu(x, y, trackId) {
                  icon: "M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z" });
   }
   items.push({ act: "addpl", label: "加入歌单…", icon: "M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm13-1v-3h-2v3h-3v2h3v3h2v-3h3v-2h-3z" });
+  items.push({ act: "share", label: "复制分享链接", icon: SHARE_ICON });
   // 只收藏了多 P 视频里的某一集时，给一个把整个合集收齐的入口
   if ((t.coll_total || 0) > 1) {
     items.push({ act: "collect-rest",
@@ -772,6 +854,7 @@ function openCtxMenu(x, y, trackId) {
         renderList();
         toast(r.embedded ? "封面已保存并内嵌到音频文件" : "封面已缓存到本地", "ok");
       }
+      else if (it.act === "share") shareTrack(t);
       else if (it.act === "collect-rest") {
         toast("正在收集合集…");
         const r = await api(`/api/tracks/${trackId}/collect-rest`, { method: "POST" });
@@ -797,6 +880,7 @@ function openCollCtxMenu(x, y, bvid) {
   }
   items.push(
     { act: "addpl", label: "合集加入歌单…", icon: "M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm13-1v-3h-2v3h-3v2h3v3h2v-3h3v-2h-3z" },
+    { act: "share", label: "复制合集链接", icon: SHARE_ICON },
     { act: "select", label: "全选本合集", icon: "M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z" },
     { sep: true },
     { act: "delete", label: "删除整个合集（含本地文件）", icon: "M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z", danger: true },
@@ -804,6 +888,7 @@ function openCollCtxMenu(x, y, bvid) {
   showMenu(x, y, items, async (it) => {
     try {
       if (it.act === "play") playTrack(ids[0], ids);
+      else if (it.act === "share") shareCollection(g);
       else if (it.act === "download") { await downloadMany(ids); toast("合集开始下载…", "ok"); }
       else if (it.act === "addpl") openPopoverAt(ids);
       else if (it.act === "rest") {
@@ -1010,9 +1095,27 @@ function askConfirm({ title = "确认操作", text = "", okText = "确 定",
   });
 }
 
+/* ---------------- 分享弹窗的交互 ---------------- */
+$("#share-copy").addEventListener("click", async () => {
+  const ok = await copyText($("#share-url").value);
+  toast(ok ? "链接已复制" : "复制失败，请手动选中复制", ok ? "ok" : "err");
+  if (ok) closeShare();
+});
+$("#share-info").addEventListener("click", async () => {
+  const input = $("#share-url");
+  const ok = await copyText(input.dataset.info || input.value);
+  toast(ok ? "歌曲信息已复制" : "复制失败，请手动选中复制", ok ? "ok" : "err");
+  if (ok) closeShare();
+});
+$("#share-url").addEventListener("focus", (e) => e.target.select());
+shareOv.addEventListener("click", (e) => { if (e.target === shareOv) closeShare(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !shareOv.hidden) { e.stopPropagation(); closeShare(); }
+}, true);
+
 /** 是否有弹层处于打开状态 */
 function isOverlayOpen() {
-  return !modal.hidden || !confirmOv.hidden;
+  return !modal.hidden || !confirmOv.hidden || !shareOv.hidden;
 }
 
 /* ==================== 播放核心 ==================== */
@@ -1063,6 +1166,8 @@ function playPrev() {
 
 function updateNowPlaying() {
   const t = state.current;
+  // 没有 B 站来源信息就没什么可分享的
+  $("#btn-share").hidden = !t || !t.bvid;
   if (!t) {
     $("#np-title").textContent = "未在播放";
     $("#np-artist").textContent = "";
@@ -1123,6 +1228,7 @@ async function addByUrl(url) {
   return api("/api/tracks", { method: "POST", body: { url, mode } });
 }
 $("#url-input").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#btn-add").click(); });
+$("#btn-share").addEventListener("click", () => shareTrack(state.current));
 
 document.querySelector('[data-view="all"]').addEventListener("click", () => {
   state.view = { type: "all" };
