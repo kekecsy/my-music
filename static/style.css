@@ -159,6 +159,7 @@ main {
 .act-btn svg { width: 15px; height: 15px; fill: currentColor; }
 .act-btn:hover { background: var(--panel-2); color: var(--text); }
 .act-btn.danger:hover { color: var(--red); }
+.act-btn.share:hover { color: var(--accent); }
 
 .eq { position: absolute; inset: 0; display: flex; gap: 2px; align-items: flex-end; justify-content: center; height: 100%; background: rgba(20, 22, 30, 0.45); padding-bottom: 7px; }
 .eq i { width: 3px; background: var(--accent); border-radius: 1px; animation: eq 0.9s ease-in-out infinite; }
@@ -391,14 +392,14 @@ body.selecting .track-row { cursor: pointer; }
 }
 .share-url:focus { border-color: var(--accent); background: var(--panel); }
 
-/* 播放栏的分享按钮：hover 播放器时才浮现，避免干扰 */
+/* 播放栏的分享按钮：正在播放时始终可见（之前只在 hover 时才浮现，太隐蔽） */
 .np-share {
   width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
-  color: var(--text-dim); opacity: 0; transition: opacity 0.15s ease;
+  color: var(--text-dim);
+  transition: background 0.15s ease, color 0.15s ease;
 }
-#player:hover .np-share, .np-share:focus-visible { opacity: 1; }
-.np-share:hover { background: var(--panel-2); color: var(--accent); }
+.np-share:hover, .np-share:focus-visible { background: var(--panel-2); color: var(--accent); }
 .np-share svg { width: 16px; height: 16px; fill: currentColor; }
 
 #toast-wrap { position: fixed; top: 18px; left: 50%; transform: translateX(-50%); z-index: 500; display: flex; flex-direction: column; gap: 8px; align-items: center; }
