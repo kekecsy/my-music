@@ -119,6 +119,17 @@ const LM_FS = (() => {
     }
   }
 
+  /* ---------- 重新授权（不用重选目录） ----------
+   * 浏览器权限提示里如果选的是「仅本次允许」，重启浏览器后句柄还在但权限
+   * 需要再确认一次。这时直接对已记住的句柄重新申请即可，不必重选文件夹。
+   * 必须由用户点击触发，否则会被拒绝。 */
+
+  async function reauthorize() {
+    const h = await loadHandle();
+    if (!h) throw new Error('还没有绑定目录，请先选择项目文件夹');
+    return h.requestPermission({ mode: 'readwrite' });
+  }
+
   /* ---------- 供页面调用：选择目录（必须由用户点击触发） ---------- */
 
   async function pick() {
@@ -140,6 +151,7 @@ const LM_FS = (() => {
   return {
     INBOX_NAME,
     pick,
+    reauthorize,
     describe,
     saveHandle,
     loadHandle,

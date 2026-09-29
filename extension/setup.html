@@ -42,6 +42,7 @@
     <div class="state-row"><i id="dot" class="dot"></i><b id="stateText">正在检查…</b></div>
     <div id="dirInfo" class="tip"></div>
     <div class="pc-actions" style="margin-top: 12px">
+      <button id="btnRegrant" class="btn primary big hidden">恢复读写权限</button>
       <button id="btnPick" class="btn primary big">选择 local music 项目文件夹</button>
       <button id="btnClear" class="btn ghost big hidden">解除绑定</button>
     </div>
@@ -56,7 +57,10 @@
         macOS 一般在 <code>~/Library/Application Support/localmusic</code></li>
     </ol>
     <div class="tip" style="margin-top: 8px">
-      选择后浏览器会问是否允许读写，选「允许」即可。若某天提示授权失效，回到这个页面重新选一次就行。
+      选择后浏览器会问是否允许读写：请选「<b>每次访问时都允许</b>」——选「仅本次允许」的话，
+      重启浏览器后权限就失效了（这时点上面的「恢复读写权限」即可，不用重新选文件夹）。<br>
+      另外，如果你把项目放在<b>桌面</b>上，macOS 第一次会问「是否允许访问桌面上的文件」，
+      也要点允许。
     </div>
   </section>
 

@@ -33,6 +33,9 @@
     const info = $('dirInfo');
 
     dot.className = 'dot';
+    // 按钮显隐统一在这里重置，各分支只负责把需要露出来的打开
+    $('btnRegrant').classList.add('hidden');
+    $('btnPick').className = 'btn primary big';
     if (d.dir && d.dir.ok && d.perm === 'granted') {
       dot.classList.add('ok');
       text.textContent = `已绑定：${d.dir.name}`;
@@ -44,7 +47,10 @@
     } else if (d.dir && d.dir.ok) {
       dot.classList.add('warn');
       text.textContent = `需要重新授权：${d.dir.name}`;
-      info.textContent = '目录还记着，但浏览器要求你确认一次读写权限 —— 点下面的按钮重新选择同一个文件夹即可。';
+      info.textContent = '目录还记着，只是浏览器要求你再确认一次读写权限 —— 点「恢复读写权限」，'
+        + '在权限提示里选「每次访问时都允许」，以后就不会再问了（不用重新选文件夹）。';
+      $('btnRegrant').classList.remove('hidden');
+      $('btnPick').className = 'btn ghost big';
       $('btnClear').classList.remove('hidden');
     } else if (d.dir && d.dir.ok === false) {
       dot.classList.add('bad');
@@ -60,6 +66,24 @@
     }
     return d;
   }
+
+  // 权限失效时用这个，不必重新选文件夹
+  $('btnRegrant').addEventListener('click', async () => {
+    setLog('');
+    try {
+      const state = await LM_FS.reauthorize();
+      if (state === 'granted') {
+        const r = await send({ type: 'dir-changed' });
+        const pending = r.ok ? r.data.pending : 0;
+        setLog(`✓ 读写权限已恢复${pending ? `，当前有 ${pending} 条收藏等待同步` : ''}`, 'ok');
+      } else {
+        setLog('权限仍没拿到。可以点「选择 local music 项目文件夹」重新选一次。', 'err');
+      }
+      await render();
+    } catch (e) {
+      setLog('× ' + (e && e.message ? e.message : e), 'err');
+    }
+  });
 
   $('btnPick').addEventListener('click', async () => {
     setLog('');
