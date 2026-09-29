@@ -20,7 +20,7 @@
 1. 打开浏览器的扩展管理页：地址栏输入 `chrome://extensions`（Edge 是 `edge://extensions`）
 2. 打开右上角的「**开发者模式**」开关
 3. 点击左上角「**加载已解压的扩展程序**」，选择本目录（`extension/` 文件夹）
-4. 工具栏出现粉色心形图标即安装成功（建议点📌固定到工具栏）
+4. 工具栏出现蓝紫色方块图标（戴耳机的猫）即安装成功（建议点📌固定到工具栏）
 
 > Firefox 暂不支持（清单格式不同）。Safari 不支持。
 
@@ -79,9 +79,13 @@ extension/
 ├── fsaccess.js        # 项目目录绑定与读写（File System Access API，SW 与页面共用）
 ├── setup.html/js      # 绑定目录的设置页（独立标签页，避免 popup 被系统对话框关掉）
 ├── popup.html/js/css  # 工具栏弹窗
-├── icons/             # 图标（make_icons.py 生成）
-└── make_icons.py      # 图标生成脚本（纯 Python，无依赖）
+├── icons/             # 扩展图标 icon16/32/48/128.png + 源图 cover.png
+└── make_icons.py      # 图标生成：从 icons/cover.png 裁剪重制（需要 pillow、numpy）
 ```
+
+图标由 `icons/cover.png`（1254×1254，四周带黑边）经 `make_icons.py` 处理而来：
+自动裁掉黑边、把圆角外的黑色抠成透明（避免缩小时在边缘混出黑边）、
+给 16/32 做轻度锐化。改了源图后重跑 `python3 make_icons.py` 即可。
 
 插件写出的 `data/extension-inbox.jsonl`（每行一条 JSON）由后端在启动时导入，
 导入后归档到 `data/inbox/imported-时间戳.jsonl`，可随时查看或删掉。
