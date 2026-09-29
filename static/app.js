@@ -475,6 +475,11 @@ window.__coverRetry = function (img) {
 function rowHtml(t, asChild = false, queueIndex = null) {
   const isPlaying = state.current && state.current.id === t.id;
   const inPlaylist = state.view.type === "pl";
+  const inQueue = state.view.type === "queue";
+  // 播放列表 / 歌单视图下这个按钮只是「从当前列表移除」，不是删歌：
+  // 用 × 图标并把动作写清楚，避免被当成删除整首歌（队列视图原先误用了垃圾桶图标 + "删除"）
+  const removeOnly = inPlaylist || inQueue;
+  const removeTitle = inPlaylist ? "从此歌单移除" : inQueue ? "从播放列表移除" : "删除";
   const sel = state.selected.has(t.id);
   const cover = t.cover ? coverTag(t.id, { lazy: true }) : "";
   const draggable = queueIndex != null;   // 播放列表 / 歌单视图支持拖动排序
@@ -501,8 +506,8 @@ function rowHtml(t, asChild = false, queueIndex = null) {
         : `<button class="act-btn" data-act="download" ${t.download_status === "downloading" ? "disabled" : ""} title="下载到本地"><svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></button>`}
       <button class="act-btn" data-act="addpl" title="加入歌单"><svg viewBox="0 0 24 24"><path d="M14 10H3v2h11v-2zm0-4H3v2h11V6zM3 16h7v-2H3v2zm13-1v-3h-2v3h-3v2h3v3h2v-3h3v-2h-3z"/></svg></button>
       <button class="act-btn share" data-act="share" title="复制分享链接"><svg viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81 1.66 0 3-1.34 3-3s-1.34-3-3-3-3 1.34-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9c-1.66 0-3 1.34-3 3s1.34 3 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.16c-.05.21-.08.43-.08.65 0 1.61 1.31 2.92 2.92 2.92s2.92-1.31 2.92-2.92-1.31-2.92-2.92-2.92z"/></svg></button>
-      <button class="act-btn danger" data-act="delete" title="${inPlaylist ? "从此歌单移除" : "删除"}">
-        ${inPlaylist
+      <button class="act-btn danger" data-act="delete" title="${removeTitle}">
+        ${removeOnly
           ? `<svg viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>`
           : `<svg viewBox="0 0 24 24"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>`}
       </button>
@@ -554,7 +559,7 @@ function bindRow(row, id) {
   row.querySelectorAll("[data-act]").forEach((btn) => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
-      try { await rowAction(btn.dataset.act, id); } catch (err) { toast(err.message, "err"); }
+      try { await rowAction(btn.dataset.act, id, btn); } catch (err) { toast(err.message, "err"); }
     });
   });
 }
@@ -579,7 +584,7 @@ function bindCollHeader(h) {
       try {
         if (act === "play") playTrack(ids[0], ids);
         else if (act === "download") { await downloadMany(ids); toast("合集开始下载…", "ok"); }
-        else if (act === "addpl") openPopoverAt(ids);
+        else if (act === "addpl") openPopoverAt(ids, btn);
         else if (act === "share") shareCollection(group);
         else if (act === "rest") {
           toast("正在收集合集…");
@@ -635,7 +640,7 @@ $("#sel-bar").addEventListener("click", async (e) => {
   try {
     if (act === "play") { playTrack(ids[0], ids); clearSelection(); }
     else if (act === "download") { await downloadMany(ids); toast("开始下载选中曲目…", "ok"); clearSelection(); }
-    else if (act === "addpl") openPopoverAt(ids);
+    else if (act === "addpl") openPopoverAt(ids, btn);
     else if (act === "clear") clearSelection();
   } catch (err) { toast(err.message, "err"); }
 });
@@ -647,7 +652,7 @@ async function doDownload(id) {
   await loadTracks(); renderList(); ensurePolling();
 }
 
-async function rowAction(act, id) {
+async function rowAction(act, id, anchor) {
   if (act === "download" || act === "retry") {
     await doDownload(id);
   } else if (act === "undownload") {
@@ -661,7 +666,7 @@ async function rowAction(act, id) {
       refresh();
     }
   } else if (act === "addpl") {
-    openPopoverAt([id]);
+    openPopoverAt([id], anchor);
   } else if (act === "share") {
     const t = state.viewTracks.find((x) => x.id === id) || (state.current && state.current.id === id ? state.current : null);
     if (t) shareTrack(t); else toast("这首歌信息已失效，刷新后再试", "err");
@@ -787,6 +792,41 @@ function shareCollection(g) {
 
 /* ---------------- 右键菜单 ---------------- */
 const ctx = $("#ctx-menu");
+const EDGE = 8;                       // 弹层距视口边缘的最小留白
+// 记住最近一次右键落点：从右键菜单里再开「加入歌单」时，弹层要贴着它出现，而不是跑到屏幕中间
+let ctxPos = { x: null, y: null };
+
+/* 统一算弹层落点，越界时自动收进视口（下方放不下就翻到上方）
+   anchor 支持三种形式：元素 / {x,y} 鼠标点 / 空（居中兜底） */
+function layoutPopover(size, anchor) {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const maxL = Math.max(EDGE, vw - size.width - EDGE);
+  const maxT = Math.max(EDGE, vh - size.height - EDGE);
+  let ax, ay;
+  if (anchor && anchor.nodeType === 1 && anchor.getBoundingClientRect().width) {
+    const b = anchor.getBoundingClientRect();
+    ax = b.left;
+    ay = b.bottom + 6;
+    if (ay + size.height > vh - EDGE) ay = b.top - size.height - 6;
+  } else if (anchor && typeof anchor.x === "number" && anchor.x !== null) {
+    ax = anchor.x;
+    ay = anchor.y + 6;
+    if (ay + size.height > vh - EDGE) ay = anchor.y - size.height - 6;
+  } else {
+    // 锚点已从 DOM 移除（尺寸为 0）或压根没给，退回视口居中
+    ax = (vw - size.width) / 2;
+    ay = vh * 0.3;
+  }
+  return {
+    left: Math.min(Math.max(ax, EDGE), maxL),
+    top: Math.min(Math.max(ay, EDGE), maxT),
+  };
+}
+
+function placeAt(el, pos) {
+  el.style.left = `${pos.left}px`;
+  el.style.top = `${pos.top}px`;
+}
 
 function showMenu(x, y, items, onPick) {
   ctx.innerHTML = items.map((it, i) => it.sep
@@ -795,13 +835,14 @@ function showMenu(x, y, items, onPick) {
          <svg viewBox="0 0 24 24"><path d="${it.icon}"/></svg>${it.label}
        </div>`).join("");
   ctx.hidden = false;
+  ctxPos = { x, y };
   const r = ctx.getBoundingClientRect();
-  ctx.style.left = `${Math.min(x, window.innerWidth - r.width - 8)}px`;
-  ctx.style.top = `${Math.min(y, window.innerHeight - r.height - 8)}px`;
+  placeAt(ctx, layoutPopover(r, { x, y }));
   ctx.querySelectorAll("[data-i]").forEach((el) => {
     el.addEventListener("click", () => {
+      const it = items[Number(el.dataset.i)];
       closeCtxMenu();
-      onPick(items[Number(el.dataset.i)]);
+      onPick(it);
     });
   });
 }
@@ -845,12 +886,15 @@ function openCtxMenu(x, y, trackId) {
                  icon: "M21 19V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2zM8.5 13.5l2.5 3 3.5-4.5 4.5 6H5l3.5-4.5z" });
   }
   if (inQueue) {
+    // 播放列表视图下「移除」只保留这一条：原先它和末项是同一个动作，
+    // 菜单里会出现两条一模一样的「从播放列表移除」
     items.push({ sep: true });
     items.push({ act: "remove-from-queue", label: "从播放列表移除", icon: "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z", danger: true });
+  } else {
+    items.push({ sep: true });
+    items.push({ act: "delete", label: inPlaylist ? "从此歌单移除" : "删除这首歌",
+                 icon: "M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z", danger: true });
   }
-  items.push({ sep: true });
-  items.push({ act: "delete", label: inQueue ? "从播放列表移除" : inPlaylist ? "从此歌单移除" : "删除这首歌",
-               icon: "M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z", danger: true });
 
   showMenu(x, y, items, async (it) => {
     try {
@@ -880,7 +924,7 @@ function openCtxMenu(x, y, trackId) {
         toast(r.added.length ? `已补齐合集，新增 ${r.added.length} 首` : "合集已经收齐了", "ok");
         refresh();
       }
-      else await rowAction(it.act, trackId);
+      else await rowAction(it.act, trackId, ctxPos);
     } catch (err) { toast(err.message, "err"); }
   });
 }
@@ -909,7 +953,7 @@ function openCollCtxMenu(x, y, bvid) {
       if (it.act === "play") playTrack(ids[0], ids);
       else if (it.act === "share") shareCollection(g);
       else if (it.act === "download") { await downloadMany(ids); toast("合集开始下载…", "ok"); }
-      else if (it.act === "addpl") openPopoverAt(ids);
+      else if (it.act === "addpl") openPopoverAt(ids, ctxPos);
       else if (it.act === "rest") {
         toast("正在收集合集…");
         const r = await api(`/api/tracks/${ids[0]}/collect-rest`, { method: "POST" });
@@ -988,10 +1032,18 @@ function openPlCtxMenu(x, y, pid) {
 }
 
 function closeCtxMenu() { ctx.hidden = true; }
+function closePlPopover() { $("#playlist-popover").hidden = true; }
+function closeMenus() { closeCtxMenu(); closePlPopover(); }
+/* 滚动 / 失焦时收起所有浮层；但滚动发生在浮层内部时不算（那是用户在翻长歌单列表） */
+document.addEventListener("scroll", (e) => {
+  const t = e.target;
+  if (t instanceof Element && t.closest(".popover, .ctx-menu")) return;
+  closeMenus();
+}, true);
+window.addEventListener("blur", closeMenus);
 document.addEventListener("click", (e) => { if (!e.target.closest(".ctx-menu")) closeCtxMenu(); });
-document.addEventListener("scroll", closeCtxMenu, true);
-window.addEventListener("blur", closeCtxMenu);
 document.addEventListener("contextmenu", (e) => {
+  closePlPopover();
   const row = e.target.closest(".track-row");
   if (row) { e.preventDefault(); openCtxMenu(e.clientX, e.clientY, Number(row.dataset.id)); return; }
   const coll = e.target.closest(".coll-header");
@@ -1000,24 +1052,24 @@ document.addEventListener("contextmenu", (e) => {
 });
 
 /* ---------------- 加入歌单弹出层（支持批量） ---------------- */
-function openPopoverAt(trackIds, x, y) {
+/* anchor：触发它的按钮元素，或 {x,y}（从右键菜单进来时用右键落点）。
+   弹层贴着它出现；万一没传（或锚点已从 DOM 消失）才回退到视口居中。 */
+function openPopoverAt(trackIds, anchor) {
   const ids = trackIds.filter((v, i, a) => a.indexOf(v) === i);
   const pop = $("#playlist-popover");
   pop.hidden = false;
-  pop.innerHTML = `<div class="popover-title">加入 ${ids.length > 1 ? ids.length + " 首歌曲到" : ""}歌单</div>` +
-    state.playlists.map((p) =>
-      `<div class="popover-item" data-addto="${p.id}">${escapeHtml(p.name)}<span>${p.count} 首</span></div>`).join("");
+  // 只换列表内容、保留外层结构，标题与滚动容器才能各司其职
+  pop.querySelector(".popover-title").textContent =
+    `加入 ${ids.length > 1 ? ids.length + " 首歌曲到" : ""}歌单`;
+  pop.querySelector("#popover-list").innerHTML = state.playlists.map((p) =>
+    `<div class="popover-item" data-addto="${p.id}">${escapeHtml(p.name)}<span>${p.count} 首</span></div>`).join("");
   pop.style.visibility = "hidden";
-  requestAnimationFrame(() => {
-    const r = pop.getBoundingClientRect();
-    const px = x != null ? Math.min(x, window.innerWidth - r.width - 8)
-                         : (window.innerWidth - r.width) / 2;
-    const py = y != null ? Math.min(y + 6, window.innerHeight - r.height - 8)
-                         : window.innerHeight * 0.3;
-    pop.style.left = `${Math.max(8, px)}px`;
-    pop.style.top = `${Math.max(8, py)}px`;
-    pop.style.visibility = "";
-  });
+  pop.style.left = "0px";
+  pop.style.top = "0px";
+  // 先量尺寸再定位：贴着锚点，越界自动收进视口
+  const r = pop.getBoundingClientRect();
+  placeAt(pop, layoutPopover(r, anchor));
+  pop.style.visibility = "";
   pop.querySelectorAll("[data-addto]").forEach((el) => {
     el.addEventListener("click", async () => {
       try {
