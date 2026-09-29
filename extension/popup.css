@@ -99,6 +99,11 @@ header {
 
 .sec-title { font-size: 12px; color: #9499a0; margin-bottom: 6px; }
 
+.dir-state { font-size: 12px; color: #61666d; line-height: 1.7; }
+.dir-state b { color: #18191c; }
+.dir-state .pending { color: #f0a020; }
+.dir-state .pending.ok { color: #2fbf71; }
+
 #histList { list-style: none; margin: 0; padding: 0; }
 #histList li {
   padding: 5px 0;

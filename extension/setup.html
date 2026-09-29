@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>local music · 绑定本地项目目录</title>
+  <link rel="stylesheet" href="popup.css">
+  <style>
+    body {
+      width: auto;
+      max-width: 680px;
+      margin: 0 auto;
+      padding: 26px 22px 60px;
+      background: #f6f7f8;
+    }
+    h1 { font-size: 20px; margin: 0 0 8px; }
+    .lead { color: #61666d; line-height: 1.75; margin: 0 0 18px; }
+    .lead b { color: #18191c; }
+    .state-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 14px; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #c9ccd0; flex: none; }
+    .dot.ok { background: #2fbf71; }
+    .dot.warn { background: #f0a020; }
+    .dot.bad { background: #e5484d; }
+    .tip { color: #9499a0; font-size: 12px; line-height: 1.75; }
+    .big { font-size: 14px; padding: 10px 18px; }
+    code { background: #f1f2f3; border-radius: 4px; padding: 1px 5px; font-size: 12px; }
+    ol { color: #61666d; line-height: 1.85; padding-left: 20px; margin: 8px 0 0; font-size: 13px; }
+    ol b { color: #18191c; }
+    #log { margin-top: 12px; font-size: 13px; line-height: 1.6; }
+    #log.ok { color: #2fbf71; }
+    #log.err { color: #e5484d; }
+  </style>
+</head>
+<body>
+  <h1>绑定本地项目目录</h1>
+  <p class="lead">
+    绑定一次之后，就算 <b>local music 没在运行</b>，逛 B 站时收藏的视频也会先写进项目目录里的
+    <code>data/extension-inbox.jsonl</code>；下次启动 local music 时会自动收进曲库。
+    本地服务如果在运行，则照旧直接入库，不受影响。
+  </p>
+
+  <section class="card">
+    <div class="state-row"><i id="dot" class="dot"></i><b id="stateText">正在检查…</b></div>
+    <div id="dirInfo" class="tip"></div>
+    <div class="pc-actions" style="margin-top: 12px">
+      <button id="btnPick" class="btn primary big">选择 local music 项目文件夹</button>
+      <button id="btnClear" class="btn ghost big hidden">解除绑定</button>
+    </div>
+    <div id="log"></div>
+  </section>
+
+  <section class="card">
+    <div class="sec-title">该选哪个文件夹？</div>
+    <ol>
+      <li><b>源码运行</b>：选项目根目录 —— 里面有 <code>app.py</code>、<code>static/</code> 的那个文件夹</li>
+      <li><b>打包版</b>：选数据目录 —— 里面有 <code>music.db</code> 的文件夹，
+        macOS 一般在 <code>~/Library/Application Support/localmusic</code></li>
+    </ol>
+    <div class="tip" style="margin-top: 8px">
+      选择后浏览器会问是否允许读写，选「允许」即可。若某天提示授权失效，回到这个页面重新选一次就行。
+    </div>
+  </section>
+
+  <script src="fsaccess.js"></script>
+  <script src="setup.js"></script>
+</body>
+</html>

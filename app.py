@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import glob as globmod
+import json
 import sqlite3
 import threading
 import time
@@ -57,6 +58,10 @@ def _resolve_dirs():
 
 DATA, MUSIC, IS_DEV = _resolve_dirs()
 COVERS = DATA / "covers"      # 封面缓存目录（与音频分开，避免污染音频查找的 glob）
+# 浏览器插件在「本地服务没启动」时的收藏落点：一行一条 JSON，
+# 服务启动时（或前端点同步时）自动导入曲库，导入后归档到 DATA/inbox/
+INBOX = DATA / "extension-inbox.jsonl"
+INBOX_DONE = DATA / "inbox"
 for _d in (MUSIC, DATA, COVERS):
     if not _d.is_dir():
         _d.mkdir(parents=True, exist_ok=True)
@@ -316,10 +321,79 @@ def insert_tracks(items, album="", coll_total=0):
     return added, skipped
 
 
+def import_inbox():
+    """把浏览器插件离线收藏的记录导入曲库。
+
+    插件在本地服务没启动时，会把收藏写进 data/extension-inbox.jsonl（每行一条）。
+    这里按行读取、批量入库，导入完成后把文件归档到 data/inbox/，避免重复导入。
+    已有曲目靠 tracks.url 的 UNIQUE 约束天然去重，重复调用也安全。
+    """
+    if not INBOX.exists() or INBOX.stat().st_size == 0:
+        return {"added": 0, "skipped": 0, "records": 0, "archived": None}
+
+    try:
+        raw = INBOX.read_text("utf-8", errors="ignore")
+    except OSError:
+        return {"added": 0, "skipped": 0, "records": 0, "archived": None}
+
+    added = skipped = records = 0
+    albums = {}      # bvid -> (album, coll_total)，导入后补正归属
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if not isinstance(rec, dict):
+            continue
+        items = []
+        for t in rec.get("tracks") or []:
+            if not isinstance(t, dict) or not t.get("bvid"):
+                continue
+            bvid = str(t["bvid"])
+            page = int(t.get("page") or 1)
+            items.append({
+                "bvid": bvid,
+                "page": page,
+                "url": t.get("url") or f"https://www.bilibili.com/video/{bvid}",
+                "title": t.get("title") or f"未知标题 p{page}",
+                "artist": t.get("artist") or "",
+                "cover": t.get("cover") or "",
+                "duration": int(t.get("duration") or 0),
+            })
+        if not items:
+            continue
+        album = (rec.get("album") or "").strip()
+        coll_total = int(rec.get("coll_total") or 0)
+        a, s = insert_tracks(items, album, coll_total)
+        added += len(a)
+        skipped += s
+        records += 1
+        if album and coll_total > 1:
+            albums[items[0]["bvid"]] = (album, coll_total)
+
+    for bvid, (album, total) in albums.items():
+        q("UPDATE tracks SET album=?, coll_total=? WHERE bvid=?", (album, total, bvid))
+
+    archived = None
+    try:
+        INBOX_DONE.mkdir(parents=True, exist_ok=True)
+        dest = INBOX_DONE / f"imported-{time.strftime('%Y%m%d-%H%M%S')}.jsonl"
+        INBOX.replace(dest)
+        archived = str(dest)
+    except OSError:
+        try:
+            INBOX.write_text("", encoding="utf-8")
+        except OSError:
+            pass
+    return {"added": added, "skipped": skipped, "records": records, "archived": archived}
+
+
 class TrackIn(BaseModel):
     url: str
     mode: str = "auto"          # auto / single / collection
-
 
 class NameIn(BaseModel):
     name: str
@@ -343,6 +417,25 @@ def ping():
         "version": APP_VERSION,
         "port": int(os.environ.get("LOCALMUSIC_PORT", "8790")),
     }
+
+
+@app.get("/api/inbox/status")
+def inbox_status():
+    """浏览器插件待同步的收藏条数（插件弹窗与前端都会显示）。"""
+    pending = 0
+    if INBOX.exists():
+        try:
+            pending = sum(1 for l in INBOX.read_text("utf-8", errors="ignore").splitlines()
+                          if l.strip())
+        except OSError:
+            pending = 0
+    return {"pending": pending, "path": str(INBOX)}
+
+
+@app.post("/api/inbox/sync")
+def inbox_sync():
+    """把浏览器插件在服务离线期间攒下的收藏导入曲库（幂等）。"""
+    return import_inbox()
 
 
 @app.get("/api/bili/status")
@@ -1011,8 +1104,13 @@ def reorder_playlist_tracks(pid, payload: TrackIdsIn):
     return {"ok": True, "count": len(order)}
 
 
-app.mount("/", StaticFiles(directory=str(STATIC), html=True), name="static")
+# 服务启动时先把浏览器插件在离线期间攒下的收藏收进曲库（失败不影响启动）
+try:
+    STARTUP_INBOX = import_inbox()
+except Exception as _e:      # noqa: BLE001
+    STARTUP_INBOX = {"added": 0, "skipped": 0, "records": 0, "error": str(_e)}
 
+app.mount("/", StaticFiles(directory=str(STATIC), html=True), name="static")
 
 def _port_in_use(host, port):
     """检测端口是否已被占用（即已有一个实例在运行）"""

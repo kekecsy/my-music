@@ -69,7 +69,7 @@
     if (!cur) return;
     state.bvid = cur.bvid;
     state.page = cur.page;
-    const r = await send({ type: 'api', path: `/api/bili/status?bvid=${cur.bvid}&page=${cur.page}` });
+    const r = await send({ type: 'status', bvid: cur.bvid, page: cur.page });
     if (r.ok) {
       state.fav = !!r.data.favorited;
       renderFavState();
@@ -99,10 +99,7 @@
     state.bvid = cur.bvid;
     state.page = cur.page;
 
-    const pong = await send({ type: 'api', path: '/api/ping' });
-    if (!pong.ok) { showToast(pong.error, false); return; }
-
-    const ins = await send({ type: 'api', path: `/api/bili/inspect?url=${encodeURIComponent(videoUrl())}` });
+    const ins = await send({ type: 'inspect', url: videoUrl() });
     if (!ins.ok) { showToast(ins.error, false); return; }
 
     state.title = ins.data.title || '';
@@ -118,7 +115,7 @@
     state.busy = true;
     renderBusy();
     const body = { url: videoUrl(mode === 'single' ? state.page : 1), mode };
-    const r = await send({ type: 'api', path: '/api/tracks', opts: { method: 'POST', body } });
+    const r = await send({ type: 'collect', ...body });
     state.busy = false;
     renderBusy();
     closePanel();
@@ -127,15 +124,17 @@
     const d = r.data;
     const n = (d.added || []).length;
     const sk = d.skipped || 0;
+    const queued = d.via === 'inbox';   // 服务没启动，先写进项目目录排队
+    const tail = queued ? '（local music 未启动，已排队，启动后自动入库）' : '';
     let text;
-    if (n === 0) {
+    if (n === 0 && !queued) {
       text = '曲库里已经有了，没有重复收藏';
     } else if (d.mode === 'collection') {
-      text = `已收藏《${d.album || state.title}》共 ${n} 首`;
+      text = `已收藏《${d.album || state.title}》共 ${n} 首${tail}`;
     } else {
       text = d.total > 1
-        ? `已收藏这一集（合集 ${n + sk}/${d.total}）`
-        : `已收藏《${state.title || d.album || ''}》`;
+        ? `已收藏这一集（合集 ${n + sk}/${d.total}）${tail}`
+        : `已收藏《${state.title || d.album || ''}》${tail}`;
     }
     showToast(text, true);
     refreshStatus();

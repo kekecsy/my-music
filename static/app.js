@@ -102,6 +102,19 @@ async function refresh() {
   ensurePolling();
 }
 
+/* 浏览器插件在服务离线期间攒下的收藏：后端启动时已自动导入，
+   这里再兜一次（幂等），顺便把结果告诉用户 */
+async function syncExtensionInbox() {
+  try {
+    const r = await api("/api/inbox/sync", { method: "POST" });
+    if (r && r.added > 0) {
+      toast(`已从浏览器插件同步 ${r.added} 首收藏`, "ok");
+      return true;
+    }
+  } catch (e) { /* 老版本后端没有这个接口，忽略 */ }
+  return false;
+}
+
 /* ---------------- 下载状态轮询 ---------------- */
 let pollTimer = null;
 function ensurePolling() {
@@ -1335,6 +1348,8 @@ document.addEventListener("keydown", (e) => {
 (async () => {
   updateModeUI();
   await refresh();
+  // 插件离线收藏的条目：导入成功就刷新一次列表
+  if (await syncExtensionInbox()) await refresh();
 
   // 尝试恢复上次的播放状态
   const saved = loadPlaybackState();

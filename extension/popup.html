@@ -25,6 +25,14 @@
     当前不是 B 站视频页。打开视频页后可在这里收藏，也可以在视频页或链接上<b>右键 → 收藏到 local music</b>。
   </section>
 
+  <section id="dirCard" class="card">
+    <div class="sec-title">本地项目目录</div>
+    <div id="dirState" class="dir-state">未绑定</div>
+    <div class="pc-actions" style="margin-top: 9px">
+      <button id="btnDir" class="btn ghost">绑定本地项目目录</button>
+    </div>
+  </section>
+
   <section class="card">
     <div class="row">
       <label for="mode">右键收藏默认模式</label>
@@ -42,9 +50,7 @@
       <label for="baseUrl">服务地址</label>
       <input type="text" id="baseUrl" spellcheck="false">
     </div>
-    <div id="downHint" class="down-hint hidden">
-      local music 好像没在运行。先启动它：<code>./start.sh</code>
-    </div>
+    <div id="downHint" class="down-hint hidden"></div>
   </section>
 
   <section id="histCard" class="card hidden">
