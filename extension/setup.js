@@ -27,7 +27,9 @@
 
   async function render() {
     const r = await send({ type: 'probe' });
-    const d = r.ok ? r.data : { service: false, dir: null, perm: 'none', pending: 0 };
+    const d = r.ok ? r.data : { service: false, dir: { status: 'none' }, outbox: 0 };
+    const dir = d.dir || { status: 'none' };
+    const outbox = d.outbox || 0;
     const dot = $('dot');
     const text = $('stateText');
     const info = $('dirInfo');
@@ -36,33 +38,44 @@
     // 按钮显隐统一在这里重置，各分支只负责把需要露出来的打开
     $('btnRegrant').classList.add('hidden');
     $('btnPick').className = 'btn primary big';
-    if (d.dir && d.dir.ok && d.perm === 'granted') {
+    $('btnClear').classList.add('hidden');
+
+    const svcLine = d.service
+      ? '本地服务正在运行，收藏会直接进曲库'
+      : '本地服务未运行，收藏会先写进项目目录排队';
+    const queueLine = outbox
+      ? `插件里还排着 <b>${outbox}</b> 条收藏，local music 一起来就自动入库`
+      : '';
+
+    if (dir.status === 'ready') {
       dot.classList.add('ok');
-      text.textContent = `已绑定：${d.dir.name}`;
-      info.innerHTML = `${d.dir.desc} ｜ 待同步收藏 <b>${d.pending}</b> 条 ｜ `
-        + (d.service
-          ? '本地服务正在运行，收藏会直接进曲库'
-          : '本地服务未运行，收藏会先写进项目目录排队');
+      text.textContent = `已绑定：${dir.name}`;
+      info.innerHTML = `${dir.desc} ｜ 待同步收藏 <b>${dir.pending || 0}</b> 条 ｜ ${svcLine}`
+        + (queueLine ? `<br>${queueLine}` : '');
       $('btnClear').classList.remove('hidden');
-    } else if (d.dir && d.dir.ok) {
+    } else if (dir.status === 'need-auth') {
       dot.classList.add('warn');
-      text.textContent = `需要重新授权：${d.dir.name}`;
-      info.textContent = '目录还记着，只是浏览器要求你再确认一次读写权限 —— 点「恢复读写权限」，'
-        + '在权限提示里选「每次访问时都允许」，以后就不会再问了（不用重新选文件夹）。';
+      text.textContent = `需要重新授权：${dir.name}`;
+      info.innerHTML = '目录还记着，只是浏览器把读写权限收回去了（'
+        + 'File System Access 的授权不跨会话保留：把绑定页面关掉后，本次会话就得重新确认一次）。'
+        + '<br>点「恢复读写权限」→ 在弹出的提示里选「<b>每次访问时都允许</b>」，点一次就够，不用重选文件夹。'
+        + (queueLine ? `<br>${queueLine}` : '');
       $('btnRegrant').classList.remove('hidden');
       $('btnPick').className = 'btn ghost big';
       $('btnClear').classList.remove('hidden');
-    } else if (d.dir && d.dir.ok === false) {
+    } else if (dir.status === 'bad') {
       dot.classList.add('bad');
       text.textContent = '绑定的目录不可用';
-      info.textContent = d.dir.error || '请重新选择项目文件夹';
+      info.innerHTML = (dir.error || '请重新选择项目文件夹')
+        + (queueLine ? `<br>${queueLine}` : '');
       $('btnClear').classList.remove('hidden');
     } else {
       text.textContent = '还没有绑定项目目录';
-      info.textContent = d.service
+      info.innerHTML = (d.service
         ? '本地服务正在运行 —— 现在不绑定也能收藏；绑定后即使不启动服务也能收藏。'
-        : '本地服务也没在运行 —— 绑定项目目录后，就能在 B 站随手收藏，等启动服务时自动入库。';
-      $('btnClear').classList.add('hidden');
+        : '绑定后可以不启动 local music 也能收藏。就算一直不绑定，收藏也会排队在插件里，'
+          + '等 local music 一启动就自动入库，一条都不会丢。')
+        + (queueLine ? `<br>${queueLine}` : '');
     }
     return d;
   }

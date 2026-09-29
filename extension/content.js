@@ -69,10 +69,17 @@
     if (!cur) return;
     state.bvid = cur.bvid;
     state.page = cur.page;
-    const r = await send({ type: 'status', bvid: cur.bvid, page: cur.page });
-    if (r.ok) {
-      state.fav = !!r.data.favorited;
-      renderFavState();
+    // 页面刚加载时插件后台可能还在冷启动，第一条消息偶发失败。
+    // 失败就重试；三次都问不到就保持现状 —— 宁可不亮绿点，也不要错误地
+    // 告诉用户"这首歌没收藏过"。
+    for (let i = 0; i < 3; i++) {
+      const r = await send({ type: 'status', bvid: cur.bvid, page: cur.page });
+      if (r.ok) {
+        state.fav = !!r.data.favorited;
+        renderFavState();
+        return;
+      }
+      await new Promise((res) => setTimeout(res, 700));
     }
   }
 
@@ -124,16 +131,20 @@
     const d = r.data;
     const n = (d.added || []).length;
     const sk = d.skipped || 0;
-    const queued = d.via === 'inbox';   // 服务没启动，先写进项目目录排队
-    const tail = queued ? '（local music 未启动，已排队，启动后自动入库）' : '';
+    const cnt = d.queued || n;
+    // 服务没启动：写进了项目目录，或排在插件自己的队列里
+    const queued = d.via === 'inbox' || d.via === 'outbox';
+    const tail = d.via === 'inbox'
+      ? '（local music 未启动，已写进项目目录，启动后自动入库）'
+      : (d.via === 'outbox' ? '（local music 未启动，已排队在插件里，启动后自动入库）' : '');
     let text;
     if (n === 0 && !queued) {
       text = '曲库里已经有了，没有重复收藏';
     } else if (d.mode === 'collection') {
-      text = `已收藏《${d.album || state.title}》共 ${n} 首${tail}`;
+      text = `已收藏《${d.album || state.title}》共 ${cnt} 首${tail}`;
     } else {
       text = d.total > 1
-        ? `已收藏这一集（合集 ${n + sk}/${d.total}）${tail}`
+        ? `已收藏这一集（合集 ${cnt + sk}/${d.total}）${tail}`
         : `已收藏《${state.title || d.album || ''}》${tail}`;
     }
     showToast(text, true);

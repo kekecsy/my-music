@@ -24,6 +24,18 @@
     });
   }
 
+  // 后台 service worker 可能正在冷启动，第一条消息偶发失败 → 失败就重试一两次。
+  // 只用于"查询"类消息；收藏不重试，避免语义不变的情况下多排一次队。
+  async function sendRetry(msg, tries = 3, gap = 500) {
+    let r;
+    for (let i = 0; i < tries; i++) {
+      r = await send(msg);
+      if (r.ok) return r;
+      if (i < tries - 1) await new Promise((res) => setTimeout(res, gap));
+    }
+    return r;
+  }
+
   function fmtTime(ts) {
     const d = new Date(ts);
     const p = (n) => String(n).padStart(2, '0');
@@ -34,9 +46,12 @@
 
   async function refreshConn() {
     const conn = $('conn');
-    const r = await send({ type: 'probe' });
-    const d = r.ok ? r.data : { service: false, dir: null, perm: 'none', pending: 0 };
-    const bound = !!(d.dir && d.dir.ok && d.perm === 'granted');
+    const r = await sendRetry({ type: 'probe' });
+    const d = r.ok ? r.data : { service: false, dir: { status: 'none' }, outbox: 0 };
+    const dir = d.dir || { status: 'none' };
+    const outbox = d.outbox || 0;
+    const ready = dir.status === 'ready';
+    const broken = dir.status === 'need-auth' || dir.status === 'bad';
     const hint = $('downHint');
     hint.className = 'down-hint';
     hint.innerHTML = '';
@@ -45,43 +60,61 @@
       conn.className = 'conn ok';
       conn.querySelector('em').textContent = '已连接';
       hint.classList.add('hidden');
-    } else if (bound) {
+    } else if (ready) {
       conn.className = 'conn ok';
       conn.querySelector('em').textContent = '离线模式';
       hint.classList.add('hidden');
-    } else if (d.dir && d.dir.ok) {
+    } else if (broken) {
+      // 目录还记着，只是这次会话没拿到读写权限（服务也没在跑）
       conn.className = 'conn bad';
-      conn.querySelector('em').textContent = '需重新授权';
-      hint.innerHTML = '项目目录授权失效了，打开设置页重新连接一次即可。';
+      conn.querySelector('em').textContent = dir.status === 'need-auth' ? '需重新授权' : '目录不可用';
+      hint.innerHTML = dir.status === 'need-auth'
+        ? 'local music 没在运行，项目目录也需要重新授权一次 —— 点下面的「恢复读写权限」。'
+        : 'local music 没在运行，绑定的目录也用不了。';
       hint.classList.remove('hidden');
     } else {
       conn.className = 'conn bad';
       conn.querySelector('em').textContent = '未启动';
       hint.innerHTML = 'local music 没在运行。先启动它：<code>./start.sh</code><br>'
-        + '或者绑定项目目录，就能离线收藏、等启动后自动入库。';
+        + (outbox
+          ? `已经帮你排了 <b>${outbox}</b> 条收藏在插件里，启动后自动入库。`
+          : '也可以绑定项目目录，就能离线收藏、等启动后自动入库。');
       hint.classList.remove('hidden');
     }
 
     // 目录卡片
     const st = $('dirState');
     const btn = $('btnDir');
-    if (d.dir && d.dir.ok && d.perm === 'granted') {
-      st.innerHTML = `已绑定 <b>${d.dir.name}</b>（${d.dir.desc}）`
-        + (d.pending
-          ? `<br><span class="pending">待同步 ${d.pending} 条 —— 启动 local music 后自动导入</span>`
-          : '<br><span class="pending ok">没有待同步的收藏</span>');
+    const queue = outbox
+      ? `<br><span class="pending">插件里排队 ${outbox} 条 —— local music 一起来就自动入库</span>`
+      : '';
+    if (ready) {
+      st.innerHTML = `已绑定 <b>${dir.name}</b>（${dir.desc}）`
+        + (dir.pending
+          ? `<br><span class="pending">待同步 ${dir.pending} 条 —— 启动 local music 后自动导入</span>`
+          : '<br><span class="pending ok">没有待同步的收藏</span>')
+        + queue;
       btn.textContent = '更换 / 重新连接目录';
-    } else if (d.dir && d.dir.ok) {
-      st.innerHTML = `已绑定 <b>${d.dir.name}</b>，但需要重新授权`;
-      btn.textContent = '重新连接目录';
+    } else if (dir.status === 'need-auth') {
+      st.innerHTML = `已绑定 <b>${dir.name}</b>，但需要重新授权`
+        + '<br><span class="pending">目录还记着，点下面重新授权即可（不必重选文件夹）</span>'
+        + queue;
+      btn.textContent = '恢复项目目录权限';
+    } else if (dir.status === 'bad') {
+      st.innerHTML = `绑定的目录不可用`
+        + (dir.error ? `<br><span class="pending">${dir.error}</span>` : '')
+        + queue;
+      btn.textContent = '重新选择目录';
     } else {
-      st.textContent = d.service
+      st.innerHTML = (d.service
         ? '未绑定 —— 服务在线时可正常收藏；绑定后不启动服务也能收藏'
-        : '未绑定 —— 绑定后，即使不启动 local music 也能收藏';
+        : '未绑定 —— 离线收藏会先排队在插件里，绑定目录后还能直接写进项目文件夹')
+        + queue;
       btn.textContent = '绑定本地项目目录';
     }
 
-    return { ...d, canCollect: d.service || bound };
+    // 有了「插件内队列」兜底，任何情况下都能收下这次收藏（最坏是排队等入库）
+    return { ...d, canCollect: true };
   }
 
   /* ---------------- 当前页 ---------------- */
@@ -99,7 +132,7 @@
     const pm = new URLSearchParams(new URL(tab.url).search).get('p');
     const page = pm && /^\d+$/.test(pm) ? parseInt(pm, 10) : 1;
 
-    const ins = await send({ type: 'inspect', url: tab.url });
+    const ins = await sendRetry({ type: 'inspect', url: tab.url });
     if (!ins.ok) {
       $('pcTitle').textContent = '获取视频信息失败';
       $('pcSub').textContent = ins.error;
@@ -108,7 +141,7 @@
     }
     curInfo = ins.data;
 
-    const st = await send({ type: 'status', bvid, page });
+    const st = await sendRetry({ type: 'status', bvid, page });
     $('pcTitle').textContent = curInfo.title || '未知标题';
     $('pcSub').textContent = curInfo.multi
       ? `共 ${curInfo.total} P · 当前在第 ${page} P`
@@ -149,18 +182,21 @@
     const d = r.data;
     const n = (d.added || []).length;
     const sk = d.skipped || 0;
-    const queued = d.via === 'inbox';
+    const queued = d.via === 'inbox' || d.via === 'outbox';
+    const cnt = d.queued || n;
+    const tail = d.via === 'inbox'
+      ? '，已写进项目目录，启动 local music 后自动入库'
+      : '，已排队在插件里，启动 local music 后自动入库';
     hint.className = 'pc-hint';
     if (n === 0 && !queued) {
       hint.textContent = '曲库里已经有了，没有重复收藏';
     } else if (d.mode === 'collection') {
-      hint.textContent = `已收藏《${d.album || ''}》共 ${n} 首`
-        + (queued ? '，已排队，启动 local music 后自动入库' : '，去 local music 看看吧');
+      hint.textContent = `已收藏《${d.album || ''}》共 ${cnt} 首`
+        + (queued ? tail : '，去 local music 看看吧');
     } else if (d.total > 1) {
-      hint.textContent = `已收藏这一集（合集 ${n + sk}/${d.total}）`
-        + (queued ? '，已排队，启动 local music 后自动入库' : '');
+      hint.textContent = `已收藏这一集（合集 ${cnt + sk}/${d.total}）` + (queued ? tail : '');
     } else {
-      hint.textContent = queued ? '已收藏，已排队，启动 local music 后自动入库' : '已收藏，去 local music 看看吧';
+      hint.textContent = queued ? `已收藏${tail}` : '已收藏，去 local music 看看吧';
     }
     // 状态文本跟着更新
     $('btnOne').textContent = '再收藏一次';
@@ -212,19 +248,8 @@
   async function init() {
     await loadSettings();
     bindSettings();
-    const info = await refreshConn();
-    if (info.canCollect) await loadCurrentPage();
-    else {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if ((tab.url || '').match(BV_PATH)) {
-        $('pageCard').classList.remove('hidden');
-        $('pcTitle').textContent = '现在还不能收藏';
-        $('pcSub').textContent = '启动 local music，或在下面的「本地项目目录」绑定一次';
-        $('btnOne').disabled = true;
-      } else {
-        $('noPage').classList.remove('hidden');
-      }
-    }
+    await refreshConn();
+    await loadCurrentPage();
     renderHistory();
 
     $('btnOne').addEventListener('click', () => doCollect('single'));

@@ -119,6 +119,38 @@ const LM_FS = (() => {
     }
   }
 
+  /* ---------- 状态判定（只"查"，绝不申请权限） ----------
+   *
+   * 重要：File System Access 的授权**不跨会话保留**。句柄能序列化进 IndexedDB，
+   * 但同一来源的所有页面都关掉之后，浏览器就收回访问权：下次从 IndexedDB 取回
+   * 句柄时 queryPermission() 返回 'prompt'。此时目录名还读得到（handle.name），
+   * 但**列目录 / 读写都会抛错**。
+   *
+   * 所以必须"先查权限、再列目录"，否则权限只是过期也会被误判成"目录没了/没绑定"。
+   *
+   * 返回 status：
+   *   none      还没有绑定过
+   *   need-auth 句柄在，但这个会话还没拿到读写权限（点一次「恢复读写权限」即可）
+   *   bad       目录真的用不了（被删/被移走/选错了文件夹）
+   *   ready     正常可用
+   */
+
+  async function inspect(handle) {
+    if (!handle) return { status: 'none' };
+    let perm;
+    try {
+      perm = await permission(handle, false);
+    } catch (e) {
+      return { status: 'bad', name: handle.name || '', perm: 'unknown', error: '查询权限失败：' + (e.message || e) };
+    }
+    if (perm !== 'granted') {
+      return { status: 'need-auth', name: handle.name || '（已记住的文件夹）', perm };
+    }
+    const info = await describe(handle);          // 里面已 try/catch，不会抛
+    if (!info.ok) return { status: 'bad', name: handle.name || '', perm, error: info.error };
+    return { status: 'ready', name: info.name, kind: info.kind, desc: info.desc, perm };
+  }
+
   /* ---------- 重新授权（不用重选目录） ----------
    * 浏览器权限提示里如果选的是「仅本次允许」，重启浏览器后句柄还在但权限
    * 需要再确认一次。这时直接对已记住的句柄重新申请即可，不必重选文件夹。
@@ -151,6 +183,7 @@ const LM_FS = (() => {
   return {
     INBOX_NAME,
     pick,
+    inspect,
     reauthorize,
     describe,
     saveHandle,
