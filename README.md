@@ -9,6 +9,7 @@
 ## ✨ 特性
 
 - **收藏 B 站音乐**：粘贴视频链接即可收藏，支持完整链接 / BV 号 / b23.tv 短链
+- **浏览器插件**：逛 B 站时点一下页面右下角的悬浮按钮（或右键菜单）直接收藏，多P合集可选整辑收进来，详见 [extension/README.md](extension/README.md)
 - **多P合集支持**：多P视频自动按合集分组展示，可单独操作每首歌
 - **子视频链接也能认出合集**：粘贴带 `?p=3` 的单集链接时，会告诉你它属于哪个合集、共几 P，
   让你选「只要这一集」或「收藏整个合集」；单集收藏过的合集在列表里也会标成
@@ -29,6 +30,7 @@
 
 | 操作 | 说明 |
 |------|------|
+| B站视频页右下角悬浮按钮 | 装了浏览器插件后，点一下直接收藏（多P会问你要不要收整个合集），详见 [extension/README.md](extension/README.md) |
 | 粘贴链接 → 收藏 | 支持 BV 号 / 完整链接 / b23.tv 短链；粘贴 `?p=N` 的单集链接会问你要不要收整个合集 |
 | 合集头右侧「收齐」图标 | 把这个合集还没收藏的分 P 一次收进来 |
 | 单击歌曲 | 从当前列表开始播放 |
@@ -128,6 +130,7 @@ my-music/
 ├── build.spec          # PyInstaller 打包配置
 ├── build.sh            # mac/linux 一键打包
 ├── build.bat           # Windows 一键打包
+├── extension/          # 浏览器插件（B站页面一键收藏），详见 extension/README.md
 ├── requirements.txt
 ├── .github/workflows/
 │   └── release.yml     # GitHub Actions 自动构建

@@ -68,11 +68,51 @@ if getattr(sys, "frozen", False):
 else:
     STATIC = Path(__file__).resolve().parent / "static"
 
+APP_VERSION = "1.1.0"
+
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
 BASE_HEADERS = {"User-Agent": UA, "Referer": "https://www.bilibili.com/"}
 
 app = FastAPI(title="local music")
+
+
+# ---------------- 跨域：给浏览器插件开一扇门 ----------------
+# 浏览器扩展（chrome-extension:// 等）与本地页面可以直接调用接口，
+# 其它来源（外部网站）不回 CORS 头，避免曲库被任意网页读取。
+_ORIGIN_OK = re.compile(
+    r"^(chrome-extension|moz-extension|safari-web-extension)://"
+    r"|^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$"
+)
+
+
+def _is_own_origin(origin: str) -> bool:
+    return bool(origin) and bool(_ORIGIN_OK.match(origin))
+
+
+@app.middleware("http")
+async def cors_middleware(request: Request, call_next):
+    origin = request.headers.get("origin", "")
+    allowed = _is_own_origin(origin)
+
+    # 预检：直接放行，并按 Chrome 的要求声明允许访问「本地网络」
+    if request.method == "OPTIONS" and allowed:
+        headers = {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type",
+            "Access-Control-Max-Age": "86400",
+            "Vary": "Origin",
+        }
+        if request.headers.get("access-control-request-private-network") == "true":
+            headers["Access-Control-Allow-Private-Network"] = "true"
+        return Response(status_code=204, headers=headers)
+
+    resp = await call_next(request)
+    if allowed:
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Vary"] = "Origin"
+    return resp
 
 
 # ---------------- 数据库 ----------------
@@ -294,6 +334,39 @@ class TrackIdsIn(BaseModel):
 
 
 # ---------------- 收藏 ----------------
+@app.get("/api/ping")
+def ping():
+    """探活：浏览器插件用它判断「local music 是否已经在跑」。"""
+    return {
+        "ok": True,
+        "app": "local music",
+        "version": APP_VERSION,
+        "port": int(os.environ.get("LOCALMUSIC_PORT", "8790")),
+    }
+
+
+@app.get("/api/bili/status")
+def bili_status(bvid: str = "", page: int = 1):
+    """插件用：这一集收藏了没？这个合集总共收了几首？
+
+    只看本地库，不请求 B 站，所以可以随页面切换放心调用。
+    """
+    bvid = (bvid or "").strip()
+    if not BV_RE.search(bvid):
+        raise HTTPException(400, "缺少有效的 BV 号")
+    rows = q("SELECT id, page, album, coll_total FROM tracks WHERE bvid=? ORDER BY page",
+             (bvid,), fetch=True)
+    return {
+        "bvid": bvid,
+        "page": page,
+        "favorited": any(int(r["page"] or 1) == int(page) for r in rows),
+        "collected": len(rows),
+        "coll_total": int(rows[0]["coll_total"] or 0) if rows else 0,
+        "album": (rows[0]["album"] or "") if rows else "",
+        "track_ids": [r["id"] for r in rows if int(r["page"] or 1) == int(page)],
+    }
+
+
 @app.get("/api/bili/inspect")
 def inspect_bili(url: str = ""):
     """收藏前探测：这个链接是不是多 P 视频中的一集？

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <img src="icons/icon32.png" alt="" width="22" height="22">
+    <div class="h-title">local music · B站收藏</div>
+    <span id="conn" class="conn"><i></i><em>检测中…</em></span>
+  </header>
+
+  <section id="pageCard" class="card hidden">
+    <div id="pcTitle" class="pc-title">加载中…</div>
+    <div id="pcSub" class="pc-sub"></div>
+    <div class="pc-actions">
+      <button id="btnOne" class="btn primary">收藏这一集</button>
+      <button id="btnAll" class="btn primary hidden">收藏整个合集</button>
+    </div>
+    <div id="pcHint" class="pc-hint"></div>
+  </section>
+
+  <section id="noPage" class="card muted hidden">
+    当前不是 B 站视频页。打开视频页后可在这里收藏，也可以在视频页或链接上<b>右键 → 收藏到 local music</b>。
+  </section>
+
+  <section class="card">
+    <div class="row">
+      <label for="mode">右键收藏默认模式</label>
+      <select id="mode">
+        <option value="auto">自动判断</option>
+        <option value="single">只收单集</option>
+        <option value="collection">收整个合集</option>
+      </select>
+    </div>
+    <div class="row">
+      <label for="fabToggle">视频页显示悬浮按钮</label>
+      <input type="checkbox" id="fabToggle">
+    </div>
+    <div class="row">
+      <label for="baseUrl">服务地址</label>
+      <input type="text" id="baseUrl" spellcheck="false">
+    </div>
+    <div id="downHint" class="down-hint hidden">
+      local music 好像没在运行。先启动它：<code>./start.sh</code>
+    </div>
+  </section>
+
+  <section id="histCard" class="card hidden">
+    <div class="sec-title">最近收藏</div>
+    <ul id="histList"></ul>
+  </section>
+
+  <footer>
+    <button id="openApp" class="btn ghost wide">打开 local music</button>
+  </footer>
+
+  <script src="popup.js"></script>
+</body>
+</html>
