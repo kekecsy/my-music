@@ -104,6 +104,18 @@ main {
 }
 .primary-btn:hover { background: var(--accent); color: #fff; }
 
+/* 「全部音乐」的分组 / 列表 切换 */
+.view-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--panel); border: 1px solid var(--line); color: var(--text-dim);
+  font-size: 13px; padding: 7px 12px; border-radius: 8px; font-weight: 600;
+  cursor: pointer; white-space: nowrap;
+}
+.view-toggle:hover { border-color: var(--accent); color: var(--accent); }
+.view-toggle svg { width: 15px; height: 15px; fill: currentColor; }
+/* 注意：display:inline-flex 会盖掉 [hidden]，必须显式写回来 */
+.view-toggle[hidden] { display: none; }
+
 .list-head, .track-row {
   display: grid;
   grid-template-columns: 26px 44px minmax(0, 1fr) 56px 80px 118px;
@@ -313,6 +325,59 @@ body.selecting .track-row { cursor: pointer; }
   background: var(--text-dim); cursor: pointer; border: none;
 }
 
+/* 播放列表开关（网易云：列表按钮 + 曲目数，贴在底部播放条右侧） */
+.qp-toggle {
+  display: flex; align-items: center; gap: 5px; flex-shrink: 0;
+  height: 30px; padding: 0 10px; border-radius: 8px; color: var(--text-dim);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.qp-toggle svg { width: 18px; height: 18px; fill: currentColor; }
+.qp-toggle .qp-count { font-size: 12px; font-variant-numeric: tabular-nums; }
+.qp-toggle:hover { background: var(--panel-2); color: var(--text); }
+.qp-toggle.open { background: var(--accent-soft); color: var(--accent); }
+
+/* ---------- 播放列表面板 ---------- */
+.queue-panel {
+  position: fixed; right: 14px; bottom: 100px; z-index: 250;
+  width: 440px; max-width: calc(100vw - 28px);
+  max-height: min(62vh, 540px);
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 14px; box-shadow: var(--shadow);
+  display: flex; flex-direction: column; overflow: hidden;
+  animation: qp-in 0.18s ease;
+}
+@keyframes qp-in {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: none; }
+}
+.qp-head {
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0;
+  padding: 13px 16px 10px; border-bottom: 1px solid var(--line);
+}
+.qp-title { font-size: 14px; font-weight: 700; }
+.qp-title span { font-weight: 400; color: var(--text-dim); font-size: 12px; margin-left: 2px; }
+.qp-acts { margin-left: auto; display: flex; gap: 4px; }
+.qp-btn {
+  font-size: 12px; color: var(--text-dim); padding: 5px 10px; border-radius: 7px;
+  white-space: nowrap;
+}
+.qp-btn:hover { background: var(--panel-2); color: var(--text); }
+.qp-x { padding: 5px 8px; font-size: 12px; line-height: 1; }
+
+.qp-list { flex: 1; min-height: 0; padding: 6px 0 10px; }
+/* 面板窄，行内只留「封面 / 标题 / 时长 / 移除」四列：状态徽章与其它操作按钮留到右键菜单 */
+.qp-list .track-row { grid-template-columns: 44px minmax(0, 1fr) 52px 34px; padding: 6px 12px; }
+.qp-list .track-row > .row-check,
+.qp-list .track-row > .c-status { display: none; }
+.qp-list .track-row .c-act .act-btn { display: none; }
+.qp-list .track-row .c-act .act-btn.danger { display: inline-flex; }
+.qp-list .c-dur { font-size: 11.5px; }
+
+.qp-empty { text-align: center; padding: 30px 0 34px; color: var(--text-dim); }
+.qp-empty-icon { font-size: 34px; margin-bottom: 10px; }
+.qp-empty p { font-size: 13px; }
+.qp-empty .sub { font-size: 12px; margin-top: 6px; }
+
 /* ---------- 右键菜单 / 弹出层 ---------- */
 .ctx-menu {
   position: fixed; z-index: 300; min-width: 172px;
@@ -423,6 +488,8 @@ body.selecting .track-row { cursor: pointer; }
 /* 窄屏适配 */
 @media (max-width: 860px) {
   #app { grid-template-columns: 190px 1fr; }
-  .player-right { display: none; }
+  /* 只收音量条，播放列表按钮要保留 —— 那是进队列的唯一入口 */
+  .player-right .vol-icon, #volume { display: none; }
   #progress { max-width: 300px; }
+  .queue-panel { width: calc(100vw - 28px); }
 }

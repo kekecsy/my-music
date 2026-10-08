@@ -12,7 +12,7 @@ const MODES = [
 const state = {
   tracks: [],
   playlists: [],
-  view: { type: "all" },          // "all" | "queue" | "pl"
+  view: { type: "all" },          // "all" | "downloaded" | "pl"（播放队列改由底部面板承载）
   viewTracks: [],
   queue: [],                       // 当前播放列表（内存中的实际队列）
   current: null,
@@ -21,6 +21,7 @@ const state = {
   retryCount: 0,
   selected: new Set(),
   collapsed: new Set(JSON.parse(localStorage.getItem("lm-collapsed") || "[]")),
+  allFlat: localStorage.getItem("lm-all-flat") === "1",   // 「全部音乐」用扁平列表而非按合集分组
   suppressClick: false,            // 拖拽刚结束，屏蔽紧随其后的 click
   plOrder: null,                   // { pid, ids } 歌单拖拽后的本地顺序覆盖（避免乐观更新被回拉）
 };
@@ -181,6 +182,9 @@ function renderSidebar() {
       <span class="pl-count">${p.count}</span>
     </div>`).join("");
   nav.innerHTML = html;
+  // 「已下载音乐」后面的曲目数
+  const dlCount = nav.querySelector('[data-view="downloaded"] .pl-count');
+  if (dlCount) dlCount.textContent = downloadedTracks().length;
 
   // 绑定事件
   nav.querySelectorAll("[data-view]").forEach((el) => {
@@ -210,9 +214,17 @@ function renderSidebar() {
   });
 }
 
+/** 已下载到本地、可直接离线播放的曲目 */
+function isDownloaded(t) {
+  return t.download_status === "done" && !!t.local_path;
+}
+function downloadedTracks() {
+  return state.tracks.filter(isDownloaded);
+}
+
 async function currentViewTracks() {
-  if (state.view.type === "queue") return getQueueTracks();
   if (state.view.type === "all") return state.tracks;
+  if (state.view.type === "downloaded") return downloadedTracks();
   const pl = state.playlists.find((p) => p.id === state.view.id);
   if (!pl) return [];
   const list = await api(`/api/playlists/${state.view.id}/tracks`);
@@ -249,63 +261,118 @@ async function renderList() {
   state.viewTracks = tracks;
 
   const pl = state.view.type === "pl" ? state.playlists.find((p) => p.id === state.view.id) : null;
-  if (state.view.type === "queue") {
-    $("#view-title").textContent = "播放列表";
-    $("#btn-play-all").textContent = "▶ 播放全部";
-  } else {
-    $("#view-title").textContent = state.view.type === "all" ? "全部音乐" : pl ? pl.name : "";
-    $("#btn-play-all").textContent = "▶ 播放全部";
-  }
-  // 播放列表 / 歌单，且未在搜索、且不止一首时，才允许拖动排序
+  const TITLES = { all: "全部音乐", downloaded: "已下载音乐" };
+  $("#view-title").textContent = state.view.type === "pl" ? (pl ? pl.name : "") : (TITLES[state.view.type] || "");
+  $("#btn-play-all").textContent = "▶ 播放全部";
+  // 歌单视图、或「全部音乐」的列表视图，且未在搜索、且不止一首时，才允许拖动排序
   const reorderable = canReorder() && tracks.length > 1;
   $("#view-count").textContent = reorderable
     ? `共 ${tracks.length} 首 · 按住拖动可调整顺序`
     : `共 ${tracks.length} 首`;
 
-  // 播放列表视图的空提示
-  const isQueueEmpty = state.view.type === "queue" && tracks.length === 0;
-  $("#empty-tip").hidden = !(isQueueEmpty || (state.view.type !== "queue" && tracks.length === 0));
-  if (isQueueEmpty) {
-    $("#empty-tip .empty-icon").textContent = "📋";
-    $("#empty-tip p:first-of-type").textContent = "播放列表是空的";
-    $("#empty-tip .sub").textContent = "从歌单或全部音乐中选择歌曲开始播放";
-  } else {
-    $("#empty-tip .empty-icon").textContent = "🎵";
-    $("#empty-tip p:first-of-type").textContent = "还没有收藏音乐";
-    $("#empty-tip .sub").textContent = "把 B 站视频链接粘贴到上方，点「收藏」试试";
+  // 分组 / 列表 切换按钮只在「全部音乐」视图出现；图标与文字都反映「当前」模式
+  const vt = $("#btn-all-view");
+  vt.hidden = state.view.type !== "all";
+  $("#all-view-label").textContent = state.allFlat ? "列表" : "分组";
+  $("#all-view-icon").innerHTML = state.allFlat
+    ? '<path d="M3 5h18v2H3V5zm0 6h18v2H3v-2zm0 6h18v2H3v-2z"/>'                              // ☰ 列表
+    : '<path d="M3 3h8v8H3V3zm10 0h8v8h-8V3zM3 13h8v8H3v-8zm10 0h8v8h-8v-8z"/>';           // ⊞ 分组
+  vt.title = state.allFlat
+    ? "当前：扁平列表，可按住拖动排序 · 点击切回按合集分组"
+    : "当前：按合集分组 · 点击切到扁平列表（可拖动排序）";
+
+  // 空列表提示：按视图给不同文案
+  $("#empty-tip").hidden = tracks.length > 0;
+  if (tracks.length === 0) {
+    if (state.view.type === "downloaded") {
+      $("#empty-tip .empty-icon").textContent = "⬇️";
+      $("#empty-tip p:first-of-type").textContent = "还没有已下载的音乐";
+      $("#empty-tip .sub").textContent = "在「全部音乐」里点歌曲右侧的下载按钮，把音乐存到本地";
+    } else if (state.view.type === "pl") {
+      $("#empty-tip .empty-icon").textContent = "📃";
+      $("#empty-tip p:first-of-type").textContent = "这个歌单还是空的";
+      $("#empty-tip .sub").textContent = "从「全部音乐」里把歌曲加进来";
+    } else {
+      $("#empty-tip .empty-icon").textContent = "🎵";
+      $("#empty-tip p:first-of-type").textContent = "还没有收藏音乐";
+      $("#empty-tip .sub").textContent = "把 B 站视频链接粘贴到上方，点「收藏」试试";
+    }
   }
 
   let html = "";
-  if (state.view.type === "queue" || state.view.type === "pl") {
-    // 播放列表 / 歌单视图：扁平列表，支持拖动排序
+  if (state.view.type === "pl") {
+    // 歌单视图：扁平列表，支持拖动排序
     html = tracks.map((t, i) => rowHtml(t, false, reorderable ? i : null)).join("");
   } else if (state.view.type === "all") {
-    html = buildGroups(tracks).map((g) => {
-      if (!g.collection) return rowHtml(g.tracks[0]);
-      const open = !state.collapsed.has(g.bvid);
-      return collectionHtml(g) + (open
-        ? `<div class="coll-body">${g.tracks.map((t) => rowHtml(t, true)).join("")}</div>`
-        : "");
-    }).join("");
+    if (state.allFlat) {
+      // 扁平列表：一行一首，可拖动排序（顺序写回曲库 lib_order）
+      html = tracks.map((t, i) => rowHtml(t, false, reorderable ? i : null)).join("");
+    } else {
+      html = buildGroups(tracks).map((g) => {
+        if (!g.collection) return rowHtml(g.tracks[0]);
+        const open = !state.collapsed.has(g.bvid);
+        return collectionHtml(g) + (open
+          ? `<div class="coll-body">${g.tracks.map((t) => rowHtml(t, true)).join("")}</div>`
+          : "");
+      }).join("");
+    }
   } else {
+    // 已下载音乐等：扁平列表
     html = tracks.map((t) => rowHtml(t)).join("");
   }
 
   const list = $("#track-list");
+  list.dataset.ctx = state.view.type;
   list.innerHTML = html;
   list.querySelectorAll(".track-row").forEach((row) => bindRow(row, Number(row.dataset.id)));
   list.querySelectorAll(".coll-header").forEach((h) => bindCollHeader(h));
   if (reorderable) bindRowDrag(list);
   updateSelBar();
+  renderQueuePanel();   // 面板开着时同步高亮 / 计数
 }
 
-/* ---------------- 拖动排序（播放列表 + 歌单） ---------------- */
-let dragId = null;
-const dragList = $("#track-list");
+/* ---------------- 播放列表面板（网易云风格：从底部播放条上方弹出） ---------------- */
+function queuePanelOpen() { return !$("#queue-panel").hidden; }
 
-/** 当前视图是否允许拖动排序：搜索状态下顺序是筛选结果，不允许拖 */
+/** 渲染面板内容。面板关着时只同步计数，不做无用功 */
+function renderQueuePanel() {
+  updateQueueNavCount();
+  if (!queuePanelOpen()) return;
+  const items = getQueueTracks();
+  const list = $("#queue-panel-list");
+  const reorderable = items.length > 1;
+  list.dataset.ctx = "queue";
+  list.innerHTML = items.map((t, i) => rowHtml(t, false, reorderable ? i : null, "queue")).join("");
+  list.querySelectorAll(".track-row").forEach((row) => bindRow(row, Number(row.dataset.id)));
+  if (reorderable) bindRowDrag(list);
+  list.hidden = items.length === 0;
+  $("#qp-empty").hidden = items.length > 0;
+}
+
+function openQueuePanel() {
+  $("#queue-panel").hidden = false;
+  $("#btn-queue").classList.add("open");
+  renderQueuePanel();
+}
+function closeQueuePanel() {
+  $("#queue-panel").hidden = true;
+  $("#btn-queue").classList.remove("open");
+}
+function toggleQueuePanel() {
+  if (queuePanelOpen()) closeQueuePanel(); else openQueuePanel();
+}
+
+/* ---------------- 拖动排序（播放列表面板 + 歌单） ---------------- */
+let dragId = null;
+let dragList = null;   // 本次拖拽所属的列表容器（主列表 或 播放列表面板）
+
+/** 主列表是否允许拖动排序：搜索状态下顺序是筛选结果，不允许拖。
+ *  歌单始终可拖；「全部音乐」切到扁平列表时也可拖（顺序写回曲库）。
+ *  底部的播放列表面板走自己的容器，不经过这里。 */
 function canReorder() {
-  return !state.search && (state.view.type === "queue" || state.view.type === "pl");
+  if (state.search) return false;
+  if (state.view.type === "pl") return true;
+  return state.view.type === "all" && state.allFlat;
 }
 
 /** 按下标算出把 moveId 插到 targetId 前/后的新顺序 */
@@ -324,20 +391,21 @@ let dropRow = null, dropAfter = null;
 
 function clearDropMarks() {
   dropRow = null; dropAfter = null;
-  dragList.querySelectorAll(".drop-before, .drop-after")
+  document.querySelectorAll(".track-list .drop-before, .track-list .drop-after")
     .forEach((el) => el.classList.remove("drop-before", "drop-after"));
-  dragList.classList.remove("drop-active");
+  document.querySelectorAll(".track-list.drop-active")
+    .forEach((el) => el.classList.remove("drop-active"));
 }
 
 /** 只在落点变化时才动 class。
  *  拖拽过程中频繁增删 class 会让浏览器重算光标下的命中目标，触发 dragenter/dragleave
  *  抖动；而 dragover 是节流的，抖动后可能来不及补发新的 dragover，导致 drop 被丢弃。 */
-function markDrop(row, after) {
+function markDrop(row, after, list) {
   if (dropRow === row && dropAfter === after) return;
   clearDropMarks();
-  dropRow = row; dropAfter = after;
+  dropRow = row; dropAfter = after; dragList = list;
   row.classList.add(after ? "drop-after" : "drop-before");
-  dragList.classList.add("drop-active");
+  list.classList.add("drop-active");
 }
 
 /** 按指针 Y 坐标判断应插到哪一行的之前/之后 */
@@ -356,7 +424,7 @@ function reorderQueue(moveId, targetId, after) {
   state.queue = out;
   savePlaybackState();
   updateQueueNavCount();
-  renderList();
+  renderQueuePanel();
   return true;
 }
 
@@ -382,39 +450,66 @@ async function reorderPlaylist(moveId, targetId, after) {
   return true;
 }
 
-/** 按视图分发：播放列表改内存队列，歌单写数据库 */
-function applyReorder(moveId, targetId, after) {
-  if (state.view.type === "pl") return reorderPlaylist(moveId, targetId, after);
+/** 「全部音乐」列表视图：调整曲库顺序，写回后端 lib_order */
+async function reorderLibrary(moveId, targetId, after) {
+  const ids = movedOrder(state.tracks.map((t) => t.id), moveId, targetId, after);
+  if (!ids) return false;
+  const map = new Map(state.tracks.map((t) => [t.id, t]));
+  // 乐观更新：先按新顺序渲染，界面立刻响应
+  state.tracks = ids.map((i) => map.get(i)).filter(Boolean);
+  await renderList();
+  try {
+    await api("/api/tracks/reorder", { method: "POST", body: { track_ids: ids } });
+  } catch (err) {
+    toast(err.message, "err");
+    await loadTracks();          // 失败则回落到服务端顺序
+    await renderList();
+    return false;
+  }
+  return true;
+}
+
+/** 按上下文分发：播放列表面板改内存队列，歌单 / 曲库写数据库 */
+function applyReorder(moveId, targetId, after, ctx) {
+  if (ctx === "pl") return reorderPlaylist(moveId, targetId, after);
+  if (ctx === "all") return reorderLibrary(moveId, targetId, after);
   return Promise.resolve(reorderQueue(moveId, targetId, after));
 }
 
-// 容器级监听只绑定一次：renderList 每次都会替换行节点，
-// 若把监听绑在容器上又每次渲染都绑，会重复累积
-dragList.addEventListener("dragover", (e) => {
-  if (dragId == null) return;
-  e.preventDefault();
-  e.dataTransfer.dropEffect = "move";
-  const t = pickDropTarget([...dragList.querySelectorAll(".track-row")], e.clientY);
-  if (t) markDrop(t.row, t.after);
-  else clearDropMarks();
-});
-dragList.addEventListener("dragleave", (e) => {
-  if (!dragList.contains(e.relatedTarget)) clearDropMarks();
-});
-dragList.addEventListener("drop", async (e) => {
-  if (dragId == null) return;
-  e.preventDefault();
-  const t = pickDropTarget([...dragList.querySelectorAll(".track-row")], e.clientY);
-  clearDropMarks();
-  if (!t) return;
-  const targetId = Number(t.row.dataset.id);
-  const inPlaylistView = state.view.type === "pl";
-  try {
-    if (await applyReorder(dragId, targetId, t.after)) {
-      toast(inPlaylistView ? "已调整歌单顺序" : "已调整播放顺序", "ok");
-    }
-  } catch (err) { toast(err.message, "err"); }
-});
+/** 容器级监听只绑定一次：renderList 每次都会替换行节点，
+ *  若把监听绑在容器上又每次渲染都绑，会重复累积。
+ *  主列表与播放列表面板是两个容器，各自绑一套。 */
+function attachDragContainer(el) {
+  if (!el) return;
+  el.addEventListener("dragover", (e) => {
+    if (dragId == null) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    const t = pickDropTarget([...el.querySelectorAll(".track-row")], e.clientY);
+    if (t) markDrop(t.row, t.after, el);
+    else clearDropMarks();
+  });
+  el.addEventListener("dragleave", (e) => {
+    if (!el.contains(e.relatedTarget)) clearDropMarks();
+  });
+  el.addEventListener("drop", async (e) => {
+    if (dragId == null) return;
+    e.preventDefault();
+    const t = pickDropTarget([...el.querySelectorAll(".track-row")], e.clientY);
+    const ctx = el.dataset.ctx || state.view.type;
+    clearDropMarks();
+    if (!t) return;
+    const targetId = Number(t.row.dataset.id);
+    try {
+      if (await applyReorder(dragId, targetId, t.after, ctx)) {
+        toast(ctx === "pl" ? "已调整歌单顺序"
+              : ctx === "all" ? "已调整曲库顺序" : "已调整播放顺序", "ok");
+      }
+    } catch (err) { toast(err.message, "err"); }
+  });
+}
+attachDragContainer($("#track-list"));
+attachDragContainer($("#queue-panel-list"));
 
 /** 每次渲染后给行节点绑定拖动事件（行节点是新建的，不会累积） */
 function bindRowDrag(list) {
@@ -422,6 +517,7 @@ function bindRowDrag(list) {
     row.draggable = true;
     row.addEventListener("dragstart", (e) => {
       dragId = Number(row.dataset.id);
+      dragList = list;
       e.dataTransfer.effectAllowed = "move";
       try { e.dataTransfer.setData("text/plain", String(dragId)); } catch (_) {}
       row.classList.add("dragging");
@@ -432,6 +528,7 @@ function bindRowDrag(list) {
       document.body.classList.remove("queue-dragging");
       clearDropMarks();
       dragId = null;
+      dragList = null;
       // 拖拽结束后部分浏览器会补发一次 click，屏蔽掉以免误触发播放
       state.suppressClick = true;
       setTimeout(() => { state.suppressClick = false; }, 150);
@@ -471,11 +568,13 @@ window.__coverRetry = function (img) {
   }, 350 * n);
 };
 
-/** @param {number?} queueIndex 播放列表视图中的序号 */
-function rowHtml(t, asChild = false, queueIndex = null) {
+/** @param {number?} queueIndex 播放列表视图中的序号
+ *  @param {string} ctx 渲染上下文 "all" | "downloaded" | "pl" | "queue"
+ *         主列表用自己的视图类型；底部弹出的播放列表面板统一传 "queue" */
+function rowHtml(t, asChild = false, queueIndex = null, ctx = state.view.type) {
   const isPlaying = state.current && state.current.id === t.id;
-  const inPlaylist = state.view.type === "pl";
-  const inQueue = state.view.type === "queue";
+  const inPlaylist = ctx === "pl";
+  const inQueue = ctx === "queue";
   // 播放列表 / 歌单视图下这个按钮只是「从当前列表移除」，不是删歌：
   // 用 × 图标并把动作写清楚，避免被当成删除整首歌（队列视图原先误用了垃圾桶图标 + "删除"）
   const removeOnly = inPlaylist || inQueue;
@@ -491,7 +590,7 @@ function rowHtml(t, asChild = false, queueIndex = null) {
     : "";
   return `
   <div class="track-row ${isPlaying ? "playing" : ""} ${asChild ? "coll-child" : ""}"
-       data-id="${t.id}"${draggable ? ' draggable="true"' : ""}>
+       data-id="${t.id}" data-ctx="${ctx}"${draggable ? ' draggable="true"' : ""}>
     <div class="row-check ${sel ? "on" : ""}" data-check="${t.id}"></div>
     <div class="c-cover">${cover}${isPlaying ? '<div class="eq"><i></i><i></i><i></i></div>' : ""}${idxBadge}</div>
     <div class="c-title-wrap">
@@ -548,18 +647,29 @@ function collectionHtml(g) {
 }
 
 /* ---------------- 行 / 合集事件 ---------------- */
+/** 行的上下文：面板里的行标了 data-ctx="queue"，主列表用自己的视图类型。
+ *  行内按钮的「删除」语义（真删 / 从歌单移除 / 从播放列表移除）全靠它区分 */
+function rowCtx(row) {
+  return row.dataset.ctx || state.view.type;
+}
+
 function bindRow(row, id) {
+  const ctx = rowCtx(row);
   row.addEventListener("click", async (e) => {
     if (state.suppressClick) return;   // 刚拖拽完，忽略这次点击
     if (e.target.closest(".act-btn") || e.target.closest(".badge")) return;
     const check = e.target.closest(".row-check");
     if (check || document.body.classList.contains("selecting")) { toggleSel(id); return; }
-    playTrack(id, state.viewTracks.map((x) => x.id));
+    // 面板里点歌：不改动 state.viewTracks，直接以整个队列作为播放上下文
+    const queueIds = ctx === "queue"
+      ? [...state.queue]
+      : state.viewTracks.map((x) => x.id);
+    playTrack(id, queueIds);
   });
   row.querySelectorAll("[data-act]").forEach((btn) => {
     btn.addEventListener("click", async (e) => {
       e.stopPropagation();
-      try { await rowAction(btn.dataset.act, id, btn); } catch (err) { toast(err.message, "err"); }
+      try { await rowAction(btn.dataset.act, id, btn, ctx); } catch (err) { toast(err.message, "err"); }
     });
   });
 }
@@ -652,7 +762,7 @@ async function doDownload(id) {
   await loadTracks(); renderList(); ensurePolling();
 }
 
-async function rowAction(act, id, anchor) {
+async function rowAction(act, id, anchor, ctx = state.view.type) {
   if (act === "download" || act === "retry") {
     await doDownload(id);
   } else if (act === "undownload") {
@@ -671,10 +781,10 @@ async function rowAction(act, id, anchor) {
     const t = state.viewTracks.find((x) => x.id === id) || (state.current && state.current.id === id ? state.current : null);
     if (t) shareTrack(t); else toast("这首歌信息已失效，刷新后再试", "err");
   } else if (act === "delete") {
-    if (state.view.type === "queue") {
+    if (ctx === "queue") {
       // 从播放列表中移除
       removeFromQueue(id);
-    } else if (state.view.type === "pl") {
+    } else if (ctx === "pl") {
       await api(`/api/playlists/${state.view.id}/tracks/${id}`, { method: "DELETE" });
       refresh();
     } else {
@@ -699,14 +809,18 @@ function removeFromQueue(trackId) {
     // 正在播的被删了，切到下一首
     playNext(false);
   }
-  renderList();
   updateQueueNavCount();
+  renderQueuePanel();
+  renderList();
 }
 
-/** 更新侧边栏播放列表上的计数 */
+/** 更新底部播放列表按钮 / 面板标题上的曲目数 */
 function updateQueueNavCount() {
-  const qItem = document.querySelector('[data-view="queue"] .pl-count');
-  if (qItem) qItem.textContent = state.queue.length;
+  const n = state.queue.length;
+  const btn = $("#btn-queue-count");
+  if (btn) btn.textContent = n;
+  const qc = $("#qp-count");
+  if (qc) qc.textContent = `(${n})`;
 }
 
 /* ---------------- 分享链接 ---------------- */
@@ -856,11 +970,11 @@ async function deleteTracks(ids) {
   }
 }
 
-function openCtxMenu(x, y, trackId) {
+function openCtxMenu(x, y, trackId, ctx = state.view.type) {
   const t = state.tracks.find((v) => v.id === trackId);
   if (!t) return;
-  const inPlaylist = state.view.type === "pl";
-  const inQueue = state.view.type === "queue";
+  const inPlaylist = ctx === "pl";
+  const inQueue = ctx === "queue";
   const items = [
     { act: "play", label: "立即播放", icon: "M8 5v14l11-7z" },
     { act: "next", label: "下一首播放", icon: "M16 6h2v12h-2zM6 18l8.5-6L6 6z" },
@@ -898,7 +1012,7 @@ function openCtxMenu(x, y, trackId) {
 
   showMenu(x, y, items, async (it) => {
     try {
-      if (it.act === "play") playTrack(trackId, state.viewTracks.map((v) => v.id));
+      if (it.act === "play") playTrack(trackId, inQueue ? [...state.queue] : state.viewTracks.map((v) => v.id));
       else if (it.act === "next") {
         const i = state.queue.indexOf(state.current ? state.current.id : -1);
         state.queue = state.queue.filter((v) => v !== trackId);
@@ -924,7 +1038,7 @@ function openCtxMenu(x, y, trackId) {
         toast(r.added.length ? `已补齐合集，新增 ${r.added.length} 首` : "合集已经收齐了", "ok");
         refresh();
       }
-      else await rowAction(it.act, trackId, ctxPos);
+      else await rowAction(it.act, trackId, ctxPos, ctx);
     } catch (err) { toast(err.message, "err"); }
   });
 }
@@ -1011,8 +1125,8 @@ function openPlCtxMenu(x, y, pid) {
         state.queue.push(...fresh);
         savePlaybackState();
         updateQueueNavCount();
+        renderQueuePanel();
         toast(`已加入 ${fresh.length} 首到播放列表`, "ok");
-        if (state.view.type === "queue") renderList();
       } else if (it.act === "rename") {
         openModal({ type: "rename", pid, value: pl.name });
       } else if (it.act === "delete") {
@@ -1045,7 +1159,7 @@ document.addEventListener("click", (e) => { if (!e.target.closest(".ctx-menu")) 
 document.addEventListener("contextmenu", (e) => {
   closePlPopover();
   const row = e.target.closest(".track-row");
-  if (row) { e.preventDefault(); openCtxMenu(e.clientX, e.clientY, Number(row.dataset.id)); return; }
+  if (row) { e.preventDefault(); openCtxMenu(e.clientX, e.clientY, Number(row.dataset.id), rowCtx(row)); return; }
   const coll = e.target.closest(".coll-header");
   if (coll) { e.preventDefault(); openCollCtxMenu(e.clientX, e.clientY, coll.dataset.bvid); return; }
   closeCtxMenu();
@@ -1202,6 +1316,7 @@ function playTrack(id, queueIds) {
   updateNowPlaying();
   savePlaybackState();
   renderList();
+  renderQueuePanel();
   updateQueueNavCount();
 }
 
@@ -1301,19 +1416,51 @@ async function addByUrl(url) {
 $("#url-input").addEventListener("keydown", (e) => { if (e.key === "Enter") $("#btn-add").click(); });
 $("#btn-share").addEventListener("click", () => shareTrack(state.current));
 
-document.querySelector('[data-view="all"]').addEventListener("click", () => {
-  state.view = { type: "all" };
-  state.plOrder = null;
-  renderSidebar(); renderList();
+/* ---------------- 播放列表面板 ---------------- */
+$("#btn-queue").addEventListener("click", (e) => { e.stopPropagation(); toggleQueuePanel(); });
+$("#qp-close").addEventListener("click", closeQueuePanel);
+$("#qp-play-all").addEventListener("click", () => {
+  const items = getQueueTracks();
+  if (!items.length) { toast("播放列表是空的", "err"); return; }
+  playTrack(items[0].id, [...state.queue]);
 });
-document.querySelector('[data-view="queue"]').addEventListener("click", () => {
-  state.view = { type: "queue" };
-  state.plOrder = null;
-  renderSidebar(); renderList();
+$("#qp-clear").addEventListener("click", async () => {
+  const n = state.queue.length;
+  if (!n) { toast("播放列表已经是空的"); return; }
+  const ok = await askConfirm({
+    title: "清空播放列表",
+    text: `将从播放列表中移除全部 ${n} 首。\n收藏与已下载的本地文件都不受影响。`,
+    okText: "清 空",
+  });
+  if (!ok) return;
+  state.queue = [];
+  savePlaybackState();
+  updateQueueNavCount();
+  renderQueuePanel();
+  renderList();
+  toast("播放列表已清空", "ok");
 });
+// 点面板外面收起。注意：弹窗 / 右键菜单 / 歌单浮层里的点击不算「点外面」，
+// 否则「清空 → 取消」或右键菜单里选一项，都会顺手把面板关掉
+document.addEventListener("click", (e) => {
+  if (!queuePanelOpen()) return;
+  if (e.target.closest("#queue-panel") || e.target.closest("#btn-queue")) return;
+  if (e.target.closest(".modal-overlay, .ctx-menu, .popover")) return;
+  closeQueuePanel();
+});
+
+/* 侧栏导航项的点击在 renderSidebar() 里统一绑定（每次渲染都是新节点），
+   这里不再重复绑；原先针对静态节点的两份监听是死代码，且其中一条会因
+   「播放列表」项已从侧栏移除而拿到 null，直接把脚本打断 */
 
 $("#search-input").addEventListener("input", (e) => {
   state.search = e.target.value.trim();
+  renderList();
+});
+
+$("#btn-all-view").addEventListener("click", () => {
+  state.allFlat = !state.allFlat;
+  localStorage.setItem("lm-all-flat", state.allFlat ? "1" : "0");
   renderList();
 });
 
@@ -1393,7 +1540,11 @@ document.addEventListener("keydown", (e) => {
   if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
   if (isOverlayOpen()) return;   // 弹窗打开时不响应快捷键
   if (e.code === "Space") { e.preventDefault(); $("#btn-play").click(); }
-  if (e.key === "Escape" && state.selected.size) clearSelection();
+  if (e.key === "Escape") {
+    if (!ctx.hidden) { closeCtxMenu(); return; }   // 有右键菜单先收菜单
+    if (state.selected.size) clearSelection();
+    if (queuePanelOpen()) closeQueuePanel();
+  }
 });
 
 /* ==================== 启动 & 状态恢复 ==================== */

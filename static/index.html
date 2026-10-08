@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>local music · 半本地音乐播放器</title>
-<link rel="stylesheet" href="/style.css?v=22">
+<link rel="stylesheet" href="/style.css?v=25">
 <link rel="icon" type="image/png" href="/favicon.png?v=1">
 </head>
 <body>
@@ -17,10 +17,10 @@
         <svg viewBox="0 0 24 24"><path d="M12 3v10.55A4 4 0 1 0 14 17V7h4V3h-6z"/></svg>
         全部音乐
       </div>
-      <div class="nav-item" data-view="queue">
-        <svg viewBox="0 0 24 24"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zm13-8v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V10h3V8h-5z"/></svg>
-        播放列表
-        <span class="pl-count">0</span>
+      <div class="nav-item" data-view="downloaded">
+        <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+        已下载音乐
+        <span class="pl-count" id="dl-count">0</span>
       </div>
       <div class="nav-sep">歌单</div>
       <div id="playlist-nav"></div>
@@ -39,6 +39,10 @@
       <span id="view-count" class="count"></span>
       <div class="toolbar-right">
         <input id="search-input" type="text" placeholder="搜索标题 / UP主">
+        <button id="btn-all-view" class="view-toggle" hidden>
+          <svg id="all-view-icon" viewBox="0 0 24 24"><path d="M3 3h8v8H3V3zm10 0h8v8h-8V3zM3 13h8v8H3v-8zm10 0h8v8h-8v-8z"/></svg>
+          <span id="all-view-label">分组</span>
+        </button>
         <button id="btn-play-all" class="primary-btn">▶ 播放全部</button>
       </div>
     </div>
@@ -101,11 +105,33 @@
     <div class="player-right">
       <svg class="vol-icon" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3a4.5 4.5 0 0 0-2.5-4v8a4.5 4.5 0 0 0 2.5-4z"/></svg>
       <input id="volume" type="range" min="0" max="100" value="80">
+      <button id="btn-queue" class="qp-toggle" title="播放列表" aria-label="播放列表">
+        <svg viewBox="0 0 24 24"><path d="M15 6H3v2h12V6zm0 4H3v2h12v-2zM3 16h8v-2H3v2zm13-8v8.18c-.31-.11-.65-.18-1-.18-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3V10h3V8h-5z"/></svg>
+        <span id="btn-queue-count" class="qp-count">0</span>
+      </button>
     </div>
   </footer>
 </div>
 
 <audio id="audio" preload="auto"></audio>
+
+<!-- 播放列表面板（网易云风格：从底部播放条上方弹出） -->
+<div id="queue-panel" class="queue-panel" hidden>
+  <div class="qp-head">
+    <div class="qp-title">当前播放 <span id="qp-count">(0)</span></div>
+    <div class="qp-acts">
+      <button id="qp-play-all" class="qp-btn">播放全部</button>
+      <button id="qp-clear" class="qp-btn">清空</button>
+      <button id="qp-close" class="qp-btn qp-x" title="关闭" aria-label="关闭">✕</button>
+    </div>
+  </div>
+  <div id="queue-panel-list" class="track-list qp-list"></div>
+  <div id="qp-empty" class="qp-empty" hidden>
+    <div class="qp-empty-icon">📋</div>
+    <p>播放列表是空的</p>
+    <p class="sub">从歌单或全部音乐中点歌，就会出现在这里</p>
+  </div>
+</div>
 
 <!-- 右键菜单 -->
 <div id="ctx-menu" class="ctx-menu" hidden></div>
@@ -150,6 +176,6 @@
 </div>
 <div id="toast-wrap"></div>
 
-<script src="/app.js?v=22"></script>
+<script src="/app.js?v=25"></script>
 </body>
 </html>

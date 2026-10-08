@@ -13,6 +13,7 @@ import os
 import re
 import sys
 import glob as globmod
+import hashlib
 import json
 import sqlite3
 import threading
@@ -117,6 +118,13 @@ async def cors_middleware(request: Request, call_next):
     if allowed:
         resp.headers["Access-Control-Allow-Origin"] = origin
         resp.headers["Vary"] = "Origin"
+    # 前端资源一律要求浏览器回源校验。
+    # StaticFiles 默认不发 Cache-Control，Chrome 就会按
+    # 「(now - Last-Modified) 的 10%」做启发式缓存，
+    # 于是改完代码刷新页面仍可能拿到旧的 index.html / app.js。
+    # no-cache 只是「不许直接用缓存、必须回源校验」，ETag 命中时回 304，代价极低。
+    if request.method in ("GET", "HEAD") and Path(request.url.path).suffix in (".html", ".js", ".css"):
+        resp.headers["Cache-Control"] = "no-cache"
     return resp
 
 
@@ -174,8 +182,16 @@ def init_db():
             conn.execute("ALTER TABLE tracks ADD COLUMN album TEXT DEFAULT ''")
         if "coll_total" not in cols:
             conn.execute("ALTER TABLE tracks ADD COLUMN coll_total INTEGER DEFAULT 0")
+        if "lib_order" not in cols:
+            # 「全部音乐」的手动排序（列表视图拖动）。NULL = 未手动排过，按 id DESC（最近收录在前）
+            conn.execute("ALTER TABLE tracks ADD COLUMN lib_order INTEGER")
         conn.commit()
-        conn.execute("INSERT OR IGNORE INTO playlists(id, name) VALUES(1, '我的收藏')")
+        # 早期版本内置了一个 id=1 的「我的收藏」默认歌单，每首新歌入库都会被自动塞进去，
+        # 于是它恒等于整个曲库、与「全部音乐」完全重复。这里清掉这个历史包袱。
+        # 只清「还叫这个名字」的那一条：如果用户已经改名当成自己的歌单在用，就留着。
+        conn.execute("""DELETE FROM playlist_tracks WHERE playlist_id IN
+                        (SELECT id FROM playlists WHERE id=1 AND name='我的收藏')""")
+        conn.execute("DELETE FROM playlists WHERE id=1 AND name='我的收藏'")
         # 进程重启后不可能还有下载线程在跑，把遗留的「下载中」标记为可重试，
         # 否则界面会永远卡在「下载中」
         conn.execute("""UPDATE tracks SET download_status='error', download_started=0,
@@ -301,9 +317,17 @@ def collection_tracks(data):
 
 
 def insert_tracks(items, album="", coll_total=0):
-    """批量入库并加入「我的收藏」，返回 (新增 id 列表, 跳过数)"""
+    """批量入库，返回 (新增 id 列表, 跳过数)。
+
+    注意：曲库本身就是「收藏」，不再往任何内置歌单里塞一份副本
+    （旧版会写进 id=1 的「我的收藏」，导致那个歌单恒等于全部音乐）。
+    """
     added, skipped = [], 0
-    for t in items:
+    # 若曲库已被手动排过序（存在 lib_order），新歌插到最前面，符合「最近收录在前」
+    row = q("SELECT MIN(lib_order) AS m FROM tracks WHERE lib_order IS NOT NULL", fetch=True)
+    head = row[0]["m"] if row and row[0]["m"] is not None else None
+    total = len(items)
+    for i, t in enumerate(items):
         try:
             tid = q(
                 """INSERT INTO tracks(bvid, page, url, title, artist, album,
@@ -312,9 +336,9 @@ def insert_tracks(items, album="", coll_total=0):
                 (t["bvid"], t["page"], t["url"], t["title"], t["artist"],
                  album, coll_total, t.get("cover") or "", t.get("duration") or 0),
             )
-            q("""INSERT OR IGNORE INTO playlist_tracks(playlist_id, track_id, position)
-                 VALUES(1, ?, (SELECT COALESCE(MAX(position),0)+1 FROM playlist_tracks WHERE playlist_id=1))""",
-              (tid,))
+            if head is not None:
+                # 同一批（一个合集）内部保持原有先后：第一个排最前
+                q("UPDATE tracks SET lib_order=? WHERE id=?", (head - total + i, tid))
             added.append(tid)
         except sqlite3.IntegrityError:
             skipped += 1
@@ -564,7 +588,9 @@ def collect_rest(track_id):
 @app.get("/api/tracks")
 def list_tracks():
     now = time.time()
-    rows = q("SELECT * FROM tracks ORDER BY id DESC", fetch=True)
+    # 手动排过序的（lib_order 非空）按 lib_order 升序排在最前，其余按收录时间倒序跟在后面
+    rows = q("""SELECT * FROM tracks
+                ORDER BY (lib_order IS NULL) ASC, lib_order ASC, id DESC""", fetch=True)
     for r in rows:
         if r.get("local_path") and not os.path.exists(r["local_path"]):
             r["local_path"] = None
@@ -578,6 +604,15 @@ def list_tracks():
             r["download_status"] = "error"
             r["error_msg"] = "下载超时，请重试"
     return rows
+
+
+@app.post("/api/tracks/reorder")
+def reorder_tracks(payload: TrackIdsIn):
+    """调整「全部音乐」的手动顺序（列表视图拖动排序）。lib_order 越小越靠前。"""
+    ids = [int(i) for i in (payload.track_ids or [])]
+    for i, tid in enumerate(ids):
+        q("UPDATE tracks SET lib_order=? WHERE id=?", (i + 1, tid))
+    return {"ok": True, "count": len(ids)}
 
 
 @app.delete("/api/tracks/{track_id}")
@@ -1021,8 +1056,6 @@ def rename_playlist(pid, payload: NameIn):
 
 @app.delete("/api/playlists/{pid}")
 def delete_playlist(pid):
-    if pid == 1:
-        raise HTTPException(400, "默认歌单不能删除")
     if not q("SELECT 1 FROM playlists WHERE id=?", (pid,), fetch=True):
         raise HTTPException(404, "歌单不存在")
     q("DELETE FROM playlist_tracks WHERE playlist_id=?", (pid,))
@@ -1110,6 +1143,59 @@ try:
 except Exception as _e:      # noqa: BLE001
     STARTUP_INBOX = {"added": 0, "skipped": 0, "records": 0, "error": str(_e)}
 
+def _asset_version() -> str:
+    """静态资源指纹：按 static/ 下所有 js/css 的 mtime+size 算摘要。
+    任何一个前端文件变了指纹就变 —— index.html 里的 `?v=` 由服务端实时替换成它，
+    所以「改了前端但浏览器跑的是旧代码」这类问题不会再出现，
+    也不再需要手工把 `?v=` 升一档。"""
+    h = hashlib.sha1()
+    for p in sorted(STATIC.glob("*")):
+        if p.is_file() and p.suffix in (".js", ".css"):
+            st = p.stat()
+            h.update(f"{p.name}:{st.st_mtime_ns}:{st.st_size}".encode())
+    return h.hexdigest()[:10]
+
+
+@app.get("/api/asset-version")
+def asset_version_api():
+    """给首页的自动重载脚本用：返回当前页面「应该」引用的资源地址。"""
+    return {"src": f"/app.js?v={_asset_version()}"}
+
+
+# 开发模式下往首页注入一段自动重载脚本。
+# 为什么需要它：本脚本判断到端口已被占用时只调 webbrowser.open()，
+# 而浏览器对「已经开着的同一个地址」只会把标签页切到前面、不会重新导航 ——
+# 于是页面会一直停在旧代码上，改多少次前端都看不到。这段脚本轮询指纹，
+# 一旦前端文件被改过就自己刷新，不依赖任何浏览器权限。
+_RELOAD_WATCHER = """<script>
+(function () {
+  var cur = document.querySelector('script[src*="app.js"]').getAttribute('src');
+  setInterval(function () {
+    var el = document.activeElement;
+    if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) return;
+    if (document.querySelector(".modal-overlay:not([hidden])")) return;
+    fetch("/api/asset-version", { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { if (d && d.src && d.src !== cur) location.reload(); })
+      .catch(function () {});
+  }, 3000);
+})();
+</script>
+"""
+
+
+@app.api_route("/", methods=["GET", "HEAD"])
+def index_page():
+    """首页：把 index.html 里的 `?v=xxx` 换成实时指纹再返回。
+    必须注册在 StaticFiles 挂载之前，否则会被挂载的兜底路由抢走。"""
+    html = (STATIC / "index.html").read_text(encoding="utf-8")
+    html = re.sub(r"\?v=[0-9A-Za-z._-]+", f"?v={_asset_version()}", html)
+    if IS_DEV:                      # 打包版的静态资源不会变，不需要这段
+        html = html.replace("</body>", _RELOAD_WATCHER + "</body>", 1)
+    return Response(html, media_type="text/html; charset=utf-8",
+                    headers={"Cache-Control": "no-cache"})
+
+
 app.mount("/", StaticFiles(directory=str(STATIC), html=True), name="static")
 
 def _port_in_use(host, port):
@@ -1127,13 +1213,19 @@ def main():
     import uvicorn
     port = int(os.environ.get("LOCALMUSIC_PORT", "8790"))
     host = "127.0.0.1"
+
+    # 打开浏览器时带一个「资产指纹」参数：
+    #   指纹没变 → URL 与上次相同，浏览器只把已有标签页切到前面（内容本来就是新的）；
+    #   指纹变了 → URL 不同，浏览器必定重新导航，绕开「同一地址只切标签页」的坑。
+    # 这样即便页面上那份自动重载脚本没跑起来，也不会再看到旧界面。
     url = f"http://{host}:{port}"
+    open_url = f"{url}/?v={_asset_version()}"
 
     # 已有实例在运行 → 直接打开浏览器，不重复启动
     if _port_in_use(host, port):
-        print(f"检测到 local music 已在运行，正在打开 {url}")
+        print(f"检测到 local music 已在运行，正在打开 {open_url}")
         try:
-            webbrowser.open(url)
+            webbrowser.open(open_url)
         except Exception:
             pass
         return
@@ -1142,7 +1234,7 @@ def main():
     def _open():
         time.sleep(1.5)
         try:
-            webbrowser.open(url)
+            webbrowser.open(open_url)
         except Exception:
             pass
 
