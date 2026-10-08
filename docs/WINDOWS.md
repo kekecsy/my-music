@@ -29,6 +29,10 @@
 local-music-windows-x64.exe
 ```
 
+> ⚠️ **如果 Releases 里暂时没有 Windows 包**（还没发版 / 构建没跑完），
+> 请直接走 [§2 源码运行](#2-方式-b源码运行) —— 装个 Python、双击 `start.bat` 一样能用，
+> 只是多花两分钟。源码方式反而更好改、更好升级。
+
 **放哪里**：建议单独建一个目录，例如 `D:\local-music\`，把 exe 丢进去。
 **不要**放到 `C:\Program Files\` 下面（写文件会被 UAC 拦）。
 
