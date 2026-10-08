@@ -19,11 +19,26 @@
 
 ## 安装
 
+**第 0 步：先把插件文件夹弄到硬盘**，两种来源挑一种：
+
+- **下载 Release 里的 zip（推荐，只想要插件的话最省事）**
+  到 [Releases](https://github.com/kekecsy/my-music/releases/latest) 下载
+  `local-music-extension-v*.zip`，**解压**到任意位置（比如 `~/Downloads/local-music-extension`）。
+- **用仓库里的本目录**
+  `git clone https://github.com/kekecsy/my-music.git` 后直接用 `extension/` 文件夹。
+
+> ⚠️ 必须**解压**，不能把 zip 直接拖给浏览器。也没有 `.crx` 双击安装这条路 ——
+> Chrome 137 起会拦截非商店来源的 crx 侧载。只能走下面的「加载已解压的扩展程序」。
+
+然后：
+
 1. 打开浏览器的扩展管理页：地址栏输入 `chrome://extensions`（Edge 是 `edge://extensions`）
 2. 打开右上角的「**开发者模式**」开关
-3. 点击左上角「**加载已解压的扩展程序**」，选择本目录（`extension/` 文件夹）
+3. 点击左上角「**加载已解压的扩展程序**」，选择**含 `manifest.json` 的那一层文件夹**
+   （Release zip 解压后是 `local-music-extension/`；仓库方式就是 `extension/`）
 4. 工具栏出现蓝紫色方块图标（戴耳机的猫）即安装成功（建议点📌固定到工具栏）
 
+> 选错层级会提示「清单文件缺失或不可读」，说明你选中了它的上一层或下一层。
 > Firefox 暂不支持（清单格式不同）。Safari 不支持。
 
 ## 绑定本地项目目录（可选，推荐）
@@ -100,6 +115,10 @@ extension/
 ├── icons/             # 扩展图标 icon16/32/48/128.png + 源图 cover.png
 └── make_icons.py      # 图标生成：从 icons/cover.png 裁剪重制（需要 pillow、numpy）
 ```
+
+> 最后两行（`icons/cover.png`、`make_icons.py`）是**开发用素材**，不会打进
+> Release 的 `local-music-extension-v*.zip` 里 —— 那个 zip 只含运行期必需的文件，
+> 解压后的顶层目录就叫 `local-music-extension/`，直接拿去「加载已解压的扩展程序」。
 
 图标由 `icons/cover.png`（1254×1254，四周带黑边）经 `make_icons.py` 处理而来：
 自动裁掉黑边、把圆角外的黑色抠成透明（避免缩小时在边缘混出黑边）、

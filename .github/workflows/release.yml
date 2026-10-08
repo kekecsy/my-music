@@ -95,6 +95,31 @@ jobs:
           find release-assets -type f -exec cp {} release/ \;
           ls -la release/
 
+      # 浏览器插件没有编译步骤，只是一堆静态文件，所以不占构建矩阵，
+      # 在这里直接打成 zip 挂进 Release，让「只下了 exe 的人」也能拿到插件。
+      # 注意：必须是 zip 解压后的**目录**（load unpacked），不能做成 .crx ——
+      # Chrome 137+ 会拦截非商店来源的 crx 侧载。
+      - name: Package browser extension (MV3)
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          VER="$(python3 -c "import json;print(json.load(open('extension/manifest.json'))['version'])")"
+          if [ "v${VER}" != "${TAG}" ]; then
+            echo "::warning title=插件版本与 tag 不一致::extension/manifest.json 里是 ${VER}，但 tag 是 ${TAG}。建议把 manifest.json 的 version 改成 ${TAG#v} 后再重新打 tag。"
+          fi
+          # 只打包运行期需要的文件，排除：
+          #   .DS_Store      macOS 垃圾文件
+          #   make_icons.py  图标生成脚本（开发用）
+          #   icons/cover.png 图标源图（1 MB，仅 make_icons.py 用得到）
+          rm -rf /tmp/ext-pkg && mkdir -p /tmp/ext-pkg
+          rsync -a \
+            --exclude '.DS_Store' \
+            --exclude 'make_icons.py' \
+            --exclude 'icons/cover.png' \
+            extension/ /tmp/ext-pkg/local-music-extension/
+          # 顶层目录名固定成 local-music-extension，用户解压后直接选它「加载已解压的扩展程序」
+          (cd /tmp/ext-pkg && zip -rq "${GITHUB_WORKSPACE}/release/local-music-extension-${TAG}.zip" local-music-extension)
+          ls -la release/
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:

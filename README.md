@@ -68,6 +68,15 @@
 | macOS (Apple Silicon) | `local-music-macos-arm64.tar.gz` | M1/M2/M3 芯片 |
 | macOS (Intel) | `local-music-macos-x64.tar.gz` | Intel 芯片 |
 | Windows | `local-music-windows-x64.exe` | 64 位 Windows |
+| 浏览器插件（跨平台） | `local-music-extension-v*.zip` | Chrome / Edge 用，见下方 |
+
+**浏览器插件怎么装：** 下载 `local-music-extension-v*.zip` → **解压**（一定要解压，
+不能直接把这个 zip 拖给浏览器）→ 打开 `chrome://extensions`（Edge 是 `edge://extensions`）
+→ 打开右上角「开发者模式」→ 点「加载已解压的扩展程序」→ 选中解压出来的
+`local-music-extension` 文件夹。完整说明见 [extension/README.md](extension/README.md)。
+
+> 插件没上架商店（它是个人工具，需要读写你本机的项目目录），所以只能这样本地加载。
+> 也别去找 `.crx` 双击安装 —— Chrome 137 起会直接拦截非商店来源的 crx。
 
 **macOS 用户：**
 
