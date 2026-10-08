@@ -26,10 +26,11 @@
 到本项目的 [Releases](../../releases/latest) 页面，下载：
 
 ```
-local-music-windows-x64.exe
+local-music-windows-x64.exe          ← 主程序（必需）
+local-music-extension-v*.zip         ← 浏览器插件（想要「B站一键收藏」才需要，见 §3）
 ```
 
-> ⚠️ **如果 Releases 里暂时没有 Windows 包**（还没发版 / 构建没跑完），
+> ⚠️ **万一 Releases 里暂时没有 Windows 包**（比如新版本还在构建中），
 > 请直接走 [§2 源码运行](#2-方式-b源码运行) —— 装个 Python、双击 `start.bat` 一样能用，
 > 只是多花两分钟。源码方式反而更好改、更好升级。
 
