@@ -31,11 +31,16 @@
 弹窗 →「本地项目目录」→ **绑定本地项目目录**，会打开设置页：
 
 1. 点「选择 local music 项目文件夹」
-2. 选中**项目根目录**（含 `app.py`、`static/` 的那个文件夹，例如
-   `/Users/kekecsy/Desktop/my-music`）；
-   如果你用的是打包版，选**数据目录**（含 `music.db`，macOS 一般在 `~/Library/Application Support/localmusic`）
+2. 选中**项目根目录**（含 `app.py`、`static/` 的那个文件夹）：
+   - macOS 例：`~/Desktop/my-music`
+   - Windows 例：`D:\my-music`（资源管理器里选中该文件夹即可）
+
+   如果你用的是打包版，选**数据目录**（含 `music.db`）：
+   - macOS：`~/Library/Application Support/localmusic`
+   - Windows：`%APPDATA%\localmusic`（在资源管理器地址栏粘贴这一串可直接跳过去）
 3. 浏览器问是否允许读写时，选「**每次访问时都允许**」
 4. 如果项目放在**桌面**上，macOS 还会问一次「是否允许访问桌面上的文件」，也要点允许
+   （Windows 没有这一步）
 
 绑定后：
 

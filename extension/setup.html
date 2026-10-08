@@ -52,9 +52,11 @@
   <section class="card">
     <div class="sec-title">该选哪个文件夹？</div>
     <ol>
-      <li><b>源码运行</b>：选项目根目录 —— 里面有 <code>app.py</code>、<code>static/</code> 的那个文件夹</li>
-      <li><b>打包版</b>：选数据目录 —— 里面有 <code>music.db</code> 的文件夹，
-        macOS 一般在 <code>~/Library/Application Support/localmusic</code></li>
+      <li><b>源码运行</b>：选项目根目录 —— 里面有 <code>app.py</code>、<code>static/</code> 的那个文件夹<br>
+        <span class="tip">macOS 例：<code>~/Desktop/my-music</code>　·　Windows 例：<code>D:\my-music</code></span></li>
+      <li><b>打包版</b>：选数据目录 —— 里面有 <code>music.db</code> 的文件夹<br>
+        <span class="tip">macOS：<code>~/Library/Application Support/localmusic</code>　·　
+        Windows：<code>%APPDATA%\localmusic</code>（在资源管理器地址栏粘贴即可直达）</span></li>
     </ol>
     <div class="tip" style="margin-top: 8px">
       浏览器的文件系统授权<b>不跨会话保留</b>：把本页关掉之后，本次会话的读写权限就没了
@@ -62,7 +64,7 @@
       所以第一次绑定后如果这里显示「需要重新授权」，点一下「<b>恢复读写权限</b>」，
       在提示里选「<b>每次访问时都允许</b>」即可长期有效，不必重新选文件夹。<br>
       另外，如果你把项目放在<b>桌面</b>上，macOS 第一次会问「是否允许访问桌面上的文件」，
-      也要点允许。<br>
+      也要点允许（Windows 没有这一步）。<br>
       就算一直没授权成功也不会丢收藏：插件会先把它们排在自己内部，local music 一启动就自动入库。
     </div>
   </section>
